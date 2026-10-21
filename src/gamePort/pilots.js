@@ -4665,47 +4665,56 @@ function createGamePortPilots({
     const version = ++entry.godmaPrimeVersion;
     const current = () => !entry.ended && entry.godmaPrimeVersion === version && primedFor(entry, whereabouts(entry)) === loadedFor;
     try {
-      // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
-      ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
-      // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character
-      // is held from the priming that brought it; the ship is let go at every change that primes again
-      // (ProcessSessionChange, 1154 to 1170: `del self.invByID[session.shipid]`), and so is the structure, which is
-      // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
-      // where the session has none. So a session's first priming is (True, True, None), and each after it
-      // (False, True, None); in a structure the third is True.
-      const asking = [!entry.godmaLocations.has(entry.characterID), place.shipID ? true : null, place.structureID ? true : null];
-      const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
-      if (!current()) return false;
-      // What godma let go before it asked: every inventory but the character's.
-      entry.dogma.purge({ keepShipID: place.shipID });
-      // This follows the existing managed purge scope only. Native invByID also
-      // has solar-system/starbase lifetimes which are not modeled by this registry.
-      for (const itemID of entry.godmaLocations.keys()) if (itemID !== entry.characterID) entry.godmaLocations.delete(itemID);
-      await entry.dogma.processAllInfo(allInfo, {
-        shipID: place.shipID,
-        structureID: place.structureID,
-        solarSystemID: attribute(entry, "solarsystemid"),
-        stationID: place.stationID,
-        primeLocation: async (stage, updateRows) => {
-          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
-          const kept = entry.godmaLocations.get(stage.itemID);
-          if (kept && !stage.force) {
-            kept.locationID = stage.locationID;
-            return;
-          }
-          // Original PrimeLocation updates godma first, then passively binds.
-          // allInfo does not populate cachedItems, listed or backing self/type.
-          await updateRows();
-          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
-          await cachedInventoryObject(entry, "GetInventoryFromId", [stage.itemID, 1]);
-          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
-          entry.godmaLocations.set(stage.itemID, {
-            container: entry.inventory.keyOf(stage.itemID, null),
-            locationID: stage.locationID,
-          });
-        },
-      });
-      if (!current()) return false;
+      entry.dogma.beginPrime();
+      let allInfo;
+      try {
+        // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
+        ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
+        // godma.Prime (2405 to 2409): each of the three is asked for where godma does not hold it. The character
+        // is held from the priming that brought it; the ship is let go at every change that primes again
+        // (ProcessSessionChange, 1154 to 1170: `del self.invByID[session.shipid]`), and so is the structure, which is
+        // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
+        // where the session has none. So a session's first priming is (True, True, None), and each after it
+        // (False, True, None); in a structure the third is True.
+        const asking = [!entry.godmaLocations.has(entry.characterID), place.shipID ? true : null, place.structureID ? true : null];
+        allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
+        if (!current()) return false;
+        // What godma let go before it asked: every inventory but the character's.
+        entry.dogma.purge({ keepShipID: place.shipID });
+        // This follows the existing managed purge scope only. Native invByID also
+        // has solar-system/starbase lifetimes which are not modeled by this registry.
+        for (const itemID of entry.godmaLocations.keys()) if (itemID !== entry.characterID) entry.godmaLocations.delete(itemID);
+        await entry.dogma.processAllInfo(allInfo, {
+          shipID: place.shipID,
+          structureID: place.structureID,
+          solarSystemID: attribute(entry, "solarsystemid"),
+          stationID: place.stationID,
+          primeLocation: async (stage, updateRows) => {
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            const kept = entry.godmaLocations.get(stage.itemID);
+            if (kept && !stage.force) {
+              kept.locationID = stage.locationID;
+              return;
+            }
+            // Original PrimeLocation updates godma first, then passively binds.
+            // allInfo does not populate cachedItems, listed or backing self/type.
+            await updateRows();
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            await cachedInventoryObject(entry, "GetInventoryFromId", [stage.itemID, 1]);
+            if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+            entry.godmaLocations.set(stage.itemID, {
+              container: entry.inventory.keyOf(stage.itemID, null),
+              locationID: stage.locationID,
+            });
+          },
+        });
+        if (!current()) return false;
+      } finally {
+        // Native Prime clears its flag even on failure; only success reaches
+        // the channel sends below. Retired managed bodies also skip release.
+        entry.dogma.finishPrimeBody();
+      }
+      await entry.dogma.releasePrimeReceivers();
       entry.allInfo = allInfo;
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});

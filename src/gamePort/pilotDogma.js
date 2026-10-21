@@ -5,6 +5,7 @@ const { InventoryItems } = require("./inventoryItems");
 const { createGodmaInventoryRows } = require("./godmaInventoryRows");
 const { createGodmaNumericValues } = require("./godmaNumericValues");
 const { createGodmaNumericEffects } = require("./godmaNumericEffects");
+const { createGodmaPrimeChannel } = require("./godmaPrimeChannel");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
@@ -297,6 +298,7 @@ function createPilotDogma({
   const lastChange = new Map();
   const numericValues = createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange });
   const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated }) : null;
+  const primeChannel = createGodmaPrimeChannel();
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
   /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
@@ -870,8 +872,24 @@ function createPilotDogma({
   }
 
   function shipEffect(args) {
-    if (numericEffects) return numericEffects.apply(args).finally(() => readerShipEffect(args));
-    return readerShipEffect(args);
+    return primeChannel.receive(() => {
+      if (numericEffects) return numericEffects.apply(args).finally(() => readerShipEffect(args));
+      return readerShipEffect(args);
+    });
+  }
+
+  function attributeChanges(changes) {
+    return primeChannel.receive(() => {
+      // The batch receives once, then calls OnModuleAttributeChange_ directly.
+      const ofACharge = each => Array.isArray(each) && Array.isArray(each[2]);
+      const emptied = new Set(changes.filter(each => ofACharge(each) && number(each[3]) === ATTRIBUTE.QUANTITY && number(each[5]) === 0).map(each => key(each[2])));
+      for (const each of changes) {
+        if (ofACharge(each) && emptied.has(key(each[2])) && number(each[3]) !== ATTRIBUTE.QUANTITY) continue;
+        try { change(each); } catch {
+          // Native ExceptionEater isolates each change inside this receiver.
+        }
+      }
+    });
   }
 
   /**
@@ -898,13 +916,6 @@ function createPilotDogma({
       const changes = moments.get(moment).filter((event) => Array.isArray(event) && text(event[0]) === "OnModuleAttributeChange").sort(byTime);
       const last = new Map();
       for (const each of changes) last.set(`${each[1]}:${Array.isArray(each[2]) ? each[2].join("/") : each[2]}:${each[3]}`, each);
-      for (const each of [...last.values()].sort(byTime)) {
-        try {
-          change(each);
-        } catch {
-          // As below: one bad change does not lose the rest.
-        }
-      }
       // BroadcastFilteredGSF: sorted by time, and the last one for each item's effect is the one that is told.
       const byEffectTime = (a, b) => {
         const [x, y] = [clock(a[3]) ?? 0n, clock(b[3]) ?? 0n];
@@ -916,6 +927,13 @@ function createPilotDogma({
       }
       for (const event of lastEffect.values()) {
         const work = shipEffect(event.slice(1));
+        if (work && typeof work.then === "function") pending.push(work);
+      }
+      // OnMultiEvent_238-245 invokes the effect scatter before the attribute
+      // batch scatter. This is receiver submission order, not a guarantee of
+      // completion order after a static-data provider yields.
+      if (last.size) {
+        const work = attributeChanges([...last.values()].sort(byTime));
         if (work && typeof work.then === "function") pending.push(work);
       }
     }
@@ -931,23 +949,13 @@ function createPilotDogma({
       return true;
     }
     if (notification.method === "OnModuleAttributeChanges") {
-      // godma.OnModuleAttributeChanges (1342 to 1360): a charge in a module emptied in this notice has its other
-      // changes in it left untaken.
-      const changes = items(notification.args[0]);
-      const ofACharge = (each) => Array.isArray(each) && Array.isArray(each[2]);
-      const emptied = new Set(changes.filter((each) => ofACharge(each) && number(each[3]) === ATTRIBUTE.QUANTITY && number(each[5]) === 0).map((each) => key(each[2])));
-      for (const each of changes) {
-        if (ofACharge(each) && emptied.has(key(each[2])) && number(each[3]) !== ATTRIBUTE.QUANTITY) continue;
-        try {
-          change(each);
-        } catch {
-          // godma's ExceptionEater: one bad change does not lose the rest.
-        }
-      }
+      const work = attributeChanges(items(notification.args[0]));
+      if (work && typeof work.then === "function") return work.then(() => true);
       return true;
     }
     if (notification.method === "OnModuleAttributeChange") {
-      change(["OnModuleAttributeChange", ...notification.args]);
+      const work = primeChannel.receive(() => change(["OnModuleAttributeChange", ...notification.args]));
+      if (work && typeof work.then === "function") return work.then(() => true);
       return true;
     }
     if (notification.method === "OnGodmaShipEffect") {
@@ -1176,6 +1184,10 @@ function createPilotDogma({
     feed,
     loadAllInfo,
     processAllInfo,
+    beginPrime: primeChannel.begin,
+    finishPrimeBody: primeChannel.finishBody,
+    releasePrimeReceivers: primeChannel.release,
+    primeState: primeChannel.state,
     processItemChange,
     // Raw numeric backing row, not GetItem's freshly allocated ItemWrapper or
     // a clientDogmaLocation loaded-node/index. Tuple metadata is separate.
