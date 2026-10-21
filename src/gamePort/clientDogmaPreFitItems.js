@@ -38,6 +38,11 @@ class ClientLocationDogmaItem extends ClientBaseDogmaItem {
     this.subLocations = createClientDogmaNumericMap();
   }
   OnItemLoaded() { throw new ClientDogmaItemContinuationNotReadyError(this.itemID, "location contents and effects"); }
+  PostLoadAction() {
+    // Location51-55 adds CPU/power checks and _EnforceMaxGroupOnline after
+    // Base's no-op. Do not accidentally inherit that no-op as full success.
+    throw new ClientDogmaItemContinuationNotReadyError(this.itemID, "location post-load checks");
+  }
 }
 
 class ClientShipDogmaItem extends ClientLocationDogmaItem {

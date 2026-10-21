@@ -284,6 +284,7 @@ class ClientBaseDogmaItem extends ClientSlimDogmaItem {
   GetLocationInfo() { return [field(this.invItem, "ownerID"), field(this.invItem, "locationID"), this.flagID]; }
   GetItemInfo() { const [ownerID, locationID, flagID] = this.GetLocationInfo(); return [field(this.invItem, "typeID"), field(this.invItem, "groupID"), field(this.invItem, "categoryID"), ownerID, locationID, flagID]; }
   OnItemLoaded() { throw new ClientDogmaItemContinuationNotReadyError(this.itemID, "location effects"); }
+  PostLoadAction() {} // Original BaseDogmaItem50-51 is an actual no-op.
   SetLocation() { throw new ClientDogmaItemContinuationNotReadyError(this.itemID, "fitting"); }
 }
 

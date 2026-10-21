@@ -3,8 +3,9 @@
 // A NEW native item-construction context, deliberately stopping at pre-fit.
 // These source-backed cold maps belong to this context, not an assertion that
 // an existing pilot's modifier world is empty. This is not the complete
-// Base/ClientDogmaLocation constructor, activation or LoadItem channel engine.
-// cdxnodecreationagent1 / cdxprefitcontractagent1 define the phase boundary.
+// Base/ClientDogmaLocation constructor or activation. AttachItemLoader adds
+// the explicit bounded wrapper; it does not complete those remaining phases.
+// cdxnodecreationagent1 / cdxprefitcontractagent1 define the item boundary.
 const { createClientDogmaIdentity } = require("./clientDogmaIdentity");
 const { ClientBaseDogmaItem, ClientDogmaItemContinuationNotReadyError, createClientDogmaNumericMap, clientDogmaItemID } = require("./clientDogmaItem");
 const { ClientShipDogmaItem, ClientModuleDogmaItem, ClientCharacterDogmaItem } = require("./clientDogmaPreFitItems");
@@ -12,6 +13,7 @@ const { ClientDogmaChargedAttribute } = require("./clientDogmaChargedAttribute")
 const { ClientDogmaStackingAttribute } = require("./clientDogmaStackingAttribute");
 const { sortClientDogmaAttributeFactors } = require("./clientDogmaFactorSort");
 const { applyAttributeOperator, attributeRecordLessThan } = require("./clientDogmaArithmetic");
+const { ClientDogmaItemLoader } = require("./clientDogmaItemLoader");
 
 const field = (object, name) => {
   if (object === null || object === undefined || !(name in Object(object))) throw Object.assign(new Error(`Object has no ${name} attribute.`), { name: "AttributeError" });
@@ -108,7 +110,43 @@ class ClientDogmaConstruction {
     // is intentionally NOT supplied by this bounded _Instantiate/_Load phase.
     // A caller may inspect retained partial nodes; it must not call this as a
     // completed activation or silently retry it on behalf of LoadItem.
-    this.LogInfo("BaseDogmaLocation::_InstantiateDogmaItem", field(invItem, "itemID"));
+    const itemKey = field(invItem, "itemID");
+    this.LogInfo("BaseDogmaLocation::_InstantiateDogmaItem", itemKey);
+    return this._ConstructAndLoadResolved(itemKey, invItem, newInstance);
+  }
+
+  LoadItemPhase(itemKey, { invItem = null, newInstance = false } = {}) {
+    // _Instantiate logs BEFORE the actual GetItem producer. A supplied row is
+    // used as-is; instanceRow is replaced by GetInstance in the common phase.
+    this.LogInfo("BaseDogmaLocation::_InstantiateDogmaItem", itemKey);
+    if (invItem !== null) return this._ConstructAndLoadResolved(itemKey, invItem, newInstance);
+    if (typeof this.providers.GetItem !== "function") throw new ClientDogmaItemContinuationNotReadyError(itemKey, "actual GetItem producer");
+    const found = this.providers.GetItem(itemKey);
+    if (found !== null && found !== undefined && typeof found.then === "function") {
+      return found.then(item => this._ConstructAndLoadResolved(itemKey, item, newInstance));
+    }
+    return this._ConstructAndLoadResolved(itemKey, found, newInstance);
+  }
+
+  AttachItemLoader({ sessionLocationID, exceptionPolicy, pendingModifiers, scheduling } = {}) {
+    // Explicit extension of this NEW partial context, never retrofitting or
+    // clearing an existing loaded registry. This is not the complete native
+    // Base/Client constructor or the pilot IM attachment/activation tail.
+    if (this.itemLoader || this.dogmaItems.size) throw new Error("Attach the item loader once, before constructing nodes.");
+    if (typeof sessionLocationID !== "function") throw new TypeError("The actual session location provider is required.");
+    const loader = new ClientDogmaItemLoader({ world: this, loadItem: (key, options) => this.LoadItemPhase(key, options),
+      exceptionPolicy, pendingModifiers, scheduling, logging: this.providers.logging });
+    this.itemLoader = loader;
+    this.loadingItems = loader.loadingItems;
+    this.failedLoadingItems = loader.failedLoadingItems;
+    this.modifiersAwaitingTarget = loader.modifiersAwaitingTarget;
+    this.IsItemLoaded = key => loader.IsItemLoaded(key);
+    this.IsItemLoading = key => loader.IsItemLoading(key);
+    this.LoadItem = (key, options) => loader.ClientLoadItem(key, sessionLocationID(), options);
+    return loader;
+  }
+
+  _ConstructAndLoadResolved(itemKey, invItem, newInstance) {
     try { field(invItem, "typeID"); }
     catch (error) {
       if (error.name !== "AttributeError") throw error;
@@ -119,7 +157,7 @@ class ClientDogmaConstruction {
     const instanceRow = source.GetInstance(invItem);
     const Constructor = this.GetClassForItem(invItem);
     const item = new Constructor({ world: this, invItem, clientIDFunc: this.providers.clientIDFunc, cfg: this.providers.cfg });
-    this.LogInfo("BaseDogmaLocation::Actually Loading dogma item", invItem.itemID);
+    this.LogInfo("BaseDogmaLocation::Actually Loading dogma item", itemKey);
     // Adapt records LAZILY: native Base.Load does not access instance slots
     // until AFTER all earlier static writes. Never eagerly validate/read them.
     const records = {};
@@ -127,9 +165,9 @@ class ClientDogmaConstruction {
     item.Load(invItem, records);
     if (numberID(invItem, "flagID") !== 57) throw new ClientDogmaItemContinuationNotReadyError(item.itemID, "FitItemToLocation");
     item.OnItemLoaded();
-    // Current selected OnItemLoaded methods throw at their unsupported
-    // continuation. No success sentinel, fitted index or passive is supplied.
-    throw new ClientDogmaItemContinuationNotReadyError(item.itemID, "post-load");
+    // Current selected OnItemLoaded methods throw at unsupported continuations.
+    // Only a genuinely completed _LoadItem returns its item to pending/post.
+    return item;
   }
 }
 
