@@ -14,6 +14,7 @@ const { ClientDogmaStaticAttributesNotReadyError } = require("./clientDogmaStati
 const { ClientDogmaStaticTypeDataNotReadyError } = require("./clientDogmaStaticTypeData");
 const { createClientDogmaStaticTypeLookup } = require("./clientDogmaStaticTypeLookup");
 const { createClientDogmaValueCollections } = require("./clientDogmaValueCollections");
+const { ClientDogmaConstructorPrimitiveNotReadyError } = require("./clientDogmaConstructorPrimitives");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -301,10 +302,12 @@ function createPilotDogma({
   nativeAttributeData = null,
   nativeTypeAttributes = null,
   nativeClientStaticTypeData = null,
+  createNativeClientStaticAttributeData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
 } = {}) {
+  const clientStaticAttributeData = createNativeClientStaticAttributeData ? createNativeClientStaticAttributeData() : null;
   // One pilot's local lookup prerequisite. Creating this facade is not native
   // service Run/LoadTypeAttributes, service acquisition or IM publication.
   const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
@@ -1255,6 +1258,15 @@ function createPilotDogma({
     initializeNativeClientStaticType: typeID => {
       if (!nativeClientStaticTypeData) throw new ClientDogmaStaticTypeDataNotReadyError(typeID);
       return nativeClientStaticTypeData.ready(typeID);
+    },
+    initializeNativeClientStaticAttributes: async world => {
+      if (!clientStaticAttributeData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static definition helpers");
+      await clientStaticAttributeData.ready();
+      return clientStaticAttributeData.loadAttributes(world);
+    },
+    nativeClientStaticAttributeData: () => {
+      if (!clientStaticAttributeData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static definition helpers");
+      return clientStaticAttributeData;
     },
     nativeClientStaticTypeLookup: () => {
       if (!clientStaticTypeLookup) throw new ClientDogmaStaticTypeDataNotReadyError();

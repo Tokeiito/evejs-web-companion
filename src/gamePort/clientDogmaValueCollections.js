@@ -14,11 +14,13 @@ const keyError = key => Object.assign(new Error("Value key not found."), { name:
 
 /** One immutable-key policy domain. bool keys are an explicit opt-in, then
  * compare/hash as 0/1 without replacing an earlier numeric key. Kind strings
- * are exact ASCII byte-string tokens supplied before use, not arbitrary text.
+ * are exact ASCII byte-string tokens supplied before use by default. The
+ * static-definition name map opts into arbitrary ASCII byte-string keys;
+ * Unicode/non-ASCII string hashing remains outside that admitted domain.
  * Tuples are domain-branded immutable component arrays; brands/flavor names
  * never participate in native equality or hash. No JS-array identity keys. */
-function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBooleanKeys = false } = {}) {
-  if (typeof allowBooleanKeys !== "boolean" || !Array.isArray(lockKinds) ||
+function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBooleanKeys = false, allowASCIIKeys = false } = {}) {
+  if (typeof allowBooleanKeys !== "boolean" || typeof allowASCIIKeys !== "boolean" || !Array.isArray(lockKinds) ||
     !lockKinds.every(kind => typeof kind === "string" && /^[\x00-\x7f]*$/.test(kind))) {
     throw notReady("fixed ASCII value-key policy");
   }
@@ -33,7 +35,7 @@ function createClientDogmaValueCollections({ lockKinds = ["LoadItem"], allowBool
   function prepare(key) {
     if (components(key) !== undefined) return key;
     if (typeof key === "string") {
-      if (kinds.has(key)) return key;
+      if (kinds.has(key) || (allowASCIIKeys && /^[\x00-\x7f]*$/.test(key))) return key;
       throw notReady("declared ASCII value key");
     }
     return numeric(key);

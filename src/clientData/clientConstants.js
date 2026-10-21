@@ -25,11 +25,27 @@ const path = require("node:path");
 const SCRIPT = path.join(__dirname, "..", "..", "scripts", "client-constants.py");
 const RUN_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const DOGMA_STATIC_ATTRIBUTE_NAMES = Object.freeze([
+  "dgmAttrCatGroup", "dgmAttrCatType", "attributeDataTypeTypeDamage",
+  "attributeHiSlots", "attributeHiSlotModifier", "attributeMedSlots", "attributeMedSlotModifier",
+  "attributeLowSlots", "attributeLowSlotModifier", "attributeTurretSlotsLeft", "attributeTurretHardpointModifier",
+  "attributeLauncherSlotsLeft", "attributeLauncherHardPointModifier", "attributeShieldCharge",
+  "attributeShieldCapacity", "attributeShieldUniformity", "attributeArmorDamage", "attributeArmorHP",
+  "attributeArmorUniformity", "attributeDamage", "attributeHp", "attributeStructureUniformity",
+  ...["Shield", "Armor", ""].flatMap(layer => ["Em", "Explosive", "Kinetic", "Thermal"].map(damage => `attribute${layer}${damage}DamageResonance`)),
+  "attributeEmDamage", "attributeExplosiveDamage", "attributeKineticDamage", "attributeThermalDamage",
+]);
 
 // What is read here: the name each set goes by, the module of the client's code it is in, and the names in it.
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  // BaseDogmaStaticSvc.LoadAttributes79-147 and dogma.data's charge filter.
+  dogmaStaticAttributes: Object.freeze({
+    module: "dogma/const.pyj",
+    given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"])]),
+    names: DOGMA_STATIC_ATTRIBUTE_NAMES,
+  }),
   chatRoles: Object.freeze({ module: "carbon/common/script/sys/serviceConst.pyj", names: Object.freeze(["ROLE_CHTADMINISTRATOR", "ROLE_GML", "ROLE_LEGIONEER"]) }),
   chatOwnerGroup: Object.freeze({ module: "inventorycommon/const.pyj", names: Object.freeze(["groupCharacter"]) }),
   corporationRoleLocations: Object.freeze({
@@ -190,6 +206,12 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
 
   return {
     available,
+    dogmaStaticAttributes: () => read("dogmaStaticAttributes", values => {
+      for (const name of DOGMA_STATIC_ATTRIBUTE_NAMES) {
+        if (!Object.hasOwn(values, name) || !Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not an integer constant.`);
+      }
+      return Object.freeze(Object.fromEntries(DOGMA_STATIC_ATTRIBUTE_NAMES.map(name => [name, values[name]])));
+    }),
     chatRules: async () => {
       const [roles, owner] = await Promise.all([
         read("chatRoles", values => {

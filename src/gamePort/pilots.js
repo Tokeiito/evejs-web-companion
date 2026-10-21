@@ -1150,6 +1150,7 @@ function createGamePortPilots({
   nativeAttributeData = null,
   nativeTypeAttributes = null,
   nativeClientStaticTypeData = null,
+  createNativeClientStaticAttributeData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   // The pilot's public gateway notices: (pilot {userID, characterID}, onNotice) -> stop (gamePort/publicGateway.js
@@ -1774,6 +1775,7 @@ function createGamePortPilots({
         nativeAttributeData,
         nativeTypeAttributes,
         nativeClientStaticTypeData,
+        createNativeClientStaticAttributeData,
         nativeTypeNames,
         onNumericChargeError: (message, error) => onNumericChargeError(message, error, characterID),
         fetchItemInfo: (itemID) => ownDogmaCall(entry, "ItemGetInfo", [itemID]),

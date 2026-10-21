@@ -33,6 +33,7 @@ const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
 const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
 const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaStaticAttributes");
 const { createClientDogmaStaticTypeData } = require("./gamePort/clientDogmaStaticTypeData");
+const { createClientDogmaStaticAttributeData } = require("./gamePort/clientDogmaStaticAttributeData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -230,6 +231,12 @@ const gamePortPilots = options.gamePortPilots !== undefined
         messages: (messageIDs) => clientWords.messages(messageIDs),
       }),
       nativeAttributeData,
+      // Mutable memoized helper maps belong to each emulated client, while
+      // the immutable installed definition projection may be shared.
+      createNativeClientStaticAttributeData: () => createClientDogmaStaticAttributeData({
+        attributeData: nativeAttributeData,
+        constants: () => clientConstants.dogmaStaticAttributes(),
+      }),
       // Local type values for the future native attribute-object factory.
       // Preparing them never registers an item or supplies an accurate value.
       nativeTypeAttributes: createClientDogmaStaticAttributes({
