@@ -90,6 +90,34 @@ class IdentityTable {
     this.used -= 1;
   }
 
+  copySet() {
+    // set.copy -> make_new_set -> set_merge: one initial TWO-times-used
+    // resize, then cached hashes in source slot order, without add growth.
+    const copy = new IdentityTable(this.hash, this.equal, this.iterationError);
+    if (this.used * 3 >= 16) copy.resize(this.used * 2);
+    for (const entry of this.table) {
+      if (!active(entry)) continue;
+      copy.table[copy.slot(entry.key, entry.hash)] = { ...entry };
+      copy.used += 1;
+      copy.fill += 1;
+    }
+    return copy;
+  }
+
+  differenceUpdate(other) {
+    if (other === this) {
+      this.table = new Array(8); this.used = this.fill = 0; return;
+    }
+    for (const entry of other.table) {
+      if (!active(entry)) continue;
+      const at = this.slot(entry.key, entry.hash);
+      if (active(this.table[at])) { this.table[at] = DUMMY; this.used -= 1; }
+    }
+    // set_difference_update_internal removes dummies once at least 1/5 of
+    // the mask is dead, including the original empty/small-table cases.
+    if ((this.fill - this.used) * 5 >= this.table.length - 1) this.resize(this.used * (this.used > 50000 ? 2 : 4));
+  }
+
   iterator(project) {
     // Capture size when iter() is requested, not on the first generator next().
     let expected = this.used, position = 0, finished = false;
@@ -138,7 +166,7 @@ function createClientDogmaIdentity({ hash: suppliedHash, addressStart = 0x100000
   if (typeof addressStart !== "bigint" || addressStart <= 0n || addressStart >= (1n << 64n) || addressStart % 16n !== 0n) {
     throw new TypeError("addressStart must be a positive aligned unsigned64 bigint.");
   }
-  const identities = new WeakMap(), references = new WeakSet();
+  const identities = new WeakMap(), references = new WeakSet(), setTables = new WeakMap();
   let nextAddress = addressStart;
   function identity(value) {
     if (!isObject(value)) throw new TypeError("An object or function identity is required.");
@@ -176,14 +204,24 @@ function createClientDogmaIdentity({ hash: suppliedHash, addressStart = 0x100000
     return entry.reference;
   }
   function setView(table, prepare = value => value) {
-    return Object.freeze({
+    const view = Object.freeze({
       add(value) { const key = prepare(value); table.set(key, key); },
       remove(value) { table.remove(prepare(value), true); },
       discard(value) { table.remove(prepare(value), false); },
       has(value) { return table.entry(prepare(value)) !== undefined; },
+      copy() { return setView(table.copySet(), prepare); },
+      differenceUpdate(other) {
+        const supplied = setTables.get(other);
+        if (!supplied || supplied.hash !== table.hash || supplied.equal !== table.equal) {
+          throw new TypeError("A compatible set from this identity domain is required.");
+        }
+        table.differenceUpdate(supplied);
+      },
       get size() { return table.used; },
       [Symbol.iterator]() { return table.iterator(entry => entry.key); },
     });
+    setTables.set(view, table);
+    return view;
   }
   function pair(value) {
     if (!isObject(value) || !references.has(value.reference)) throw new TypeError("An outgoing reference from this identity domain is required.");
@@ -194,13 +232,25 @@ function createClientDogmaIdentity({ hash: suppliedHash, addressStart = 0x100000
     if (typeof key !== "function") throw new TypeError("A callback function identity is required.");
     return key;
   }
+  function modifier(value) {
+    if (!isObject(value) || !isObject(value.attribute)) throw new TypeError("A strong modifier attribute is required.");
+    operationInteger(value.operation);
+    return Object.freeze({ operation: value.operation, attribute: value.attribute });
+  }
+  const sameIdentity = (a, b) => a === b;
+  const modifierHash = key => tupleHash(hashKey(operationInteger(key.operation)), hash(key.attribute));
+  const sameModifier = (a, b) => operationInteger(a.operation) === operationInteger(b.operation) && a.attribute === b.attribute;
+  const outgoingHash = key => tupleHash(hashKey(operationInteger(key.operation)), key.reference.hash());
+  const sameOutgoing = (a, b) => operationInteger(a.operation) === operationInteger(b.operation) && a.reference === b.reference;
   return Object.freeze({
     weak,
-    strongSet() { return setView(new IdentityTable(hash, (a, b) => a === b, "Set changed size during iteration")); },
+    strongSet() { return setView(new IdentityTable(hash, sameIdentity, "Set changed size during iteration")); },
+    // Slim location/owner modifier maps hold STRONG (operation,Attribute)
+    // tuples. Their tuple hashes match live weakrefs without weakening edges.
+    modifierSet() { return setView(new IdentityTable(modifierHash, sameModifier, "Set changed size during iteration"), modifier); },
     outgoingSet() {
       return setView(new IdentityTable(
-        key => tupleHash(hashKey(operationInteger(key.operation)), key.reference.hash()),
-        (a, b) => operationInteger(a.operation) === operationInteger(b.operation) && a.reference === b.reference,
+        outgoingHash, sameOutgoing,
         "Set changed size during iteration",
       ), pair);
     },

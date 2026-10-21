@@ -48,6 +48,9 @@ class ClientDogmaAttribute {
    * and logging providers. Missing providers fail where originally read;
    * they never silently become an empty modifier world. */
   constructor({ attributeID, baseRecord, itemReference, world, definition }) {
+    // Stacking initializes its three fields before entering Attribute.__init__
+    // because modifier pickup can dispatch to that subclass during this call.
+    this._InitializeStateBeforeAttribute();
     this.attribID = attributeID;
     this.itemReference = itemReference;
     this.dogmaLM = world;
@@ -76,6 +79,7 @@ class ClientDogmaAttribute {
   }
 
   get item() { return dereference(this.itemReference); }
+  _InitializeStateBeforeAttribute() {}
 
   IsAnOrphan() {
     try { field(this.item, "invItem"); return false; }

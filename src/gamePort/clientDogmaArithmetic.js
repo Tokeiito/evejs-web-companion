@@ -149,6 +149,38 @@ function attributeRecordsEqual(first, second) {
   return a.value == b.value;
 }
 
+function attributeRecordLessThan(first, second) {
+  const a = operand(first), b = operand(second);
+  if (a.type === "None") return b.type !== "None";
+  if (b.type === "None") return false;
+  return a.value < b.value;
+}
+
+// Loaded ChargedAttribute uses these actual math operations, with no godma
+// max(ratio,0) clamp. Original cdxloadedchargeagent1 executes the sqrt/exp/pow
+// failure branches. This does not assert cross-runtime libm bit identity.
+function attributeSquareRoot(given) {
+  const value = double(numeric(given, "a float is required"));
+  if (value < 0) throw Object.assign(new Error("math domain error"), { name: "ValueError" });
+  return record(Math.sqrt(value), "float");
+}
+
+function attributeExponential(given) {
+  const value = double(numeric(given, "a float is required")), result = Math.exp(value);
+  if (Number.isFinite(value) && result === Infinity) throw new OverflowError("math range error");
+  return record(result, "float");
+}
+
+function attributeSquare(given) {
+  const value = double(numeric(given)), result = value ** 2;
+  if (Number.isFinite(value) && result === Infinity) {
+    // Native PyFloat **PyInt2 reports the installed Windows errno tuple.
+    const error = new OverflowError("(34, 'Result too large')");
+    error.args = [34, "Result too large"]; throw error;
+  }
+  return record(result, "float");
+}
+
 function attributeInteger(given) {
   const found = numeric(given, "int() argument must be a string or a number, not 'NoneType'");
   if (found.type === "float") {
@@ -175,6 +207,10 @@ module.exports = {
   multiplyAttributeDoubles: (left, right) => realOperation("*", left, right),
   applyAttributeOperator,
   attributeRecordsEqual,
+  attributeRecordLessThan,
+  attributeSquareRoot,
+  attributeExponential,
+  attributeSquare,
   minimumAttributeRecord: (first, second) => selected(first, second, true),
   maximumAttributeRecord: (first, second) => selected(first, second, false),
   attributeInteger,

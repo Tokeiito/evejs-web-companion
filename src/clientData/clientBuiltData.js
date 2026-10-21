@@ -122,6 +122,8 @@ const TABLES = Object.freeze({
   iconFiles: Object.freeze({ loader: "iconIDsLoader", resource: "res:/staticdata/iconids.fsdbinary", attribute: "iconFile" }),
   dogmaAttributes: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary" }),
   // Native godma's by-name map overwrites duplicate names in loader order.
+  // The walker also retains the actual None getters that dir() omits for
+  // charge/cap/floor links; these are needed by the native attribute factory.
   dogmaAttributesOrdered: Object.freeze({ loader: "dogmaAttributesLoader", resource: "res:/staticdata/dogmaattributes.fsdbinary", keyOrder: true }),
   // A type's dogma attributes (dogma/data.py get_type_dogma: typeDogma.fsdbinary, its dogmaAttributes), and a type's
   // own record (evetypes: types.fsdbinary, its mass, capacity, volume and radius among them). Both too big to walk
