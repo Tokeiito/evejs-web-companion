@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 #include "atomic_files.h"
 #include "log_backend.h"
 #include "tasklet_timer.h"
@@ -51,6 +52,8 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(Py_ssize_t, PyTuple_Size, (PyObject*)) \
  X(PyObject*, PyTuple_GetItem, (PyObject*, Py_ssize_t)) \
  X(int, PyTuple_SetItem, (PyObject*, Py_ssize_t, PyObject*)) \
+ X(int, PyArg_ParseTuple, (PyObject*, const char*, ...)) \
+ X(int, PyType_IsSubtype, (PyObject*, PyObject*)) \
  X(PyObject*, PyString_FromStringAndSize, (const char*, Py_ssize_t)) \
  X(int, PyString_AsStringAndSize, (PyObject*, char**, Py_ssize_t*)) \
  X(PyObject*, PyUnicodeUCS2_FromUnicode, (const uint16_t*, Py_ssize_t)) \
@@ -68,6 +71,7 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(void, PyErr_Clear, (void)) \
  X(PyObject*, PyErr_NoMemory, (void)) \
  X(void, PyErr_SetString, (PyObject*, const char*)) \
+ X(PyObject*, PyErr_Format, (PyObject*, const char*, ...)) \
  X(PyObject*, PyErr_NewException, (char*, PyObject*, PyObject*)) \
  X(PyObject*, PyErr_SetExcFromWindowsErr, (PyObject*, int))
 #define DECLARE(ret, name, args) typedef ret (__cdecl *name##_fn) args; static name##_fn name;
@@ -214,8 +218,8 @@ static napi_value result(napi_env env, Scope* scope, PyObject* value) {
   return finish(scope, value ? wrap(env, value) : python_error(env));
 }
 
-// Real Win32 AtomicFile operations, provided by atomic_files.c. This module
-// is only those IO capabilities, NEVER a loaded or initialized Blue module.
+// Real Win32 AtomicFile operations and the explicit source-port layout
+// capability below, NEVER a loaded or initialized Blue module.
 // DefineErrors/PyWin32Error: blue/src/win32.cpp1279-1370,1437. These are REAL
 // Python exception subclasses made by the same exported C API, not JS names.
 typedef struct { const char* name; DWORD code; PyObject* exception; } WinError;
@@ -294,11 +298,102 @@ static PyObject* io_write(PyObject* self, PyObject* args) {
   if (status != PREFS_ATOMIC_OK) return atomic_failure(status, error);
   return new_none();
 }
+
+// Copyright (c) 2014 CCP ehf. Source port of blue/src/PyRowSet.cpp
+// RowDescriptor::Init/InitFromTypedList, under clientPreferences-LICENSE.txt.
+// Installed blue.dll 3396210: 0x1802f99f0 / 0x1802f9c30; exposed signed
+// size confirmed by SequenceGet 0x1802fb0f0 (MOVSX byte -> PyInt_FromLong).
+// This is a standalone layout capability, NOT a Blue heap type, DBRow,
+// virtual-column resolver, or a call to initblue/any engine initializer.
+typedef struct { const char* name; uint16_t type; int size, offset; } RowColumn;
+static PyObject* row_descriptor_layout(PyObject* self, PyObject* args) {
+  PyObject *schema, *kind = NULL, *tuple_type = NULL, *columns = NULL, *answer = NULL;
+  RowColumn* rows = NULL;
+  if (!PyArg_ParseTuple(args, "O:row_descriptor_layout", &schema)) return NULL;
+  PyObject* empty = PyTuple_New(0);
+  if (!empty) return NULL;
+  tuple_type = PyObject_Type(empty); decref(empty);
+  kind = PyObject_Type(schema);
+  if (!tuple_type || !kind) goto failed;
+  int is_tuple = PyType_IsSubtype(kind, tuple_type);
+  decref(kind); kind = NULL; decref(tuple_type); tuple_type = NULL;
+  if (!is_tuple) { PyErr_SetString(*exc_type, "expected a tuple of tuples of name and type"); goto failed; }
+  Py_ssize_t count = PyTuple_Size(schema);
+  // Avoid C integer/allocator overflow; no undefined-memory behavior is a
+  // supported capability. Real inventory/effect schemas are small tuples.
+  if (count < 0) goto failed;
+  if (count > INT_MAX / 128) { PyErr_NoMemory(); goto failed; }
+  rows = (RowColumn*)calloc(count ? (size_t)count : 1, sizeof(RowColumn));
+  if (!rows) { PyErr_NoMemory(); goto failed; }
+  for (Py_ssize_t i = 0; i < count; ++i) {
+    int type; PyObject* ignored = NULL;
+    if (!PyArg_ParseTuple(PyTuple_GetItem(schema, i), "si|O:DBRowDescriptor", &rows[i].name, &type, &ignored)) goto failed;
+    rows[i].type = (uint16_t)type; // Original DBTYPE is a 16-bit field.
+  }
+  int sizes[5] = {0}, offsets[5] = {0}, objects = 0, real = 0;
+  for (Py_ssize_t i = 0; i < count; ++i) {
+    int size;
+    switch (rows[i].type) {
+      case 0: size = -1; break;
+      case 11: size = 0; break;
+      case 16: case 17: size = 1; break;
+      case 2: case 18: size = 2; break;
+      case 3: case 4: case 19: size = 3; break;
+      case 5: case 6: case 20: case 21: case 64: case 135: size = 4; break;
+      case 128: case 129: case 130: size = 5; break;
+      default:
+        PyErr_Format(*exc_type, "DBRowDescriptor doesn't support data type %d", (int)(int16_t)rows[i].type);
+        goto failed;
+    }
+    rows[i].size = size;
+    if (size == 5) { ++objects; ++real; }
+    else if (size >= 0) { ++sizes[size]; ++real; }
+  }
+  int offset = 0;
+  for (int i = 4; i > 0; --i) { offsets[i] = offset; offset += sizes[i] * (1 << (i - 1)); }
+  offset *= 8; offsets[0] = offset; offset += sizes[0];
+  int null_start = offset, data_length = (offset + real + 7) / 8;
+  offset = objects ? (data_length + 7) & ~7 : data_length;
+  int object_start = objects ? offset / 8 : 0, total_length = offset + objects * 8, virtuals = 0;
+  columns = PyTuple_New(count);
+  if (!columns) goto failed;
+  for (Py_ssize_t i = 0; i < count; ++i) {
+    RowColumn* column = &rows[i];
+    if (column->size == 5) { column->offset = offset; column->size = 8; offset += 8; }
+    else if (column->size == -1) { column->offset = virtuals++; column->size = 0; }
+    else if (column->size == 0) { column->offset = offsets[0]++; column->size = -1; }
+    else { int slot = column->size; column->offset = offsets[slot]; column->size = 1 << (slot - 1); offsets[slot] += column->size; }
+    PyObject* entry = PyTuple_New(4);
+    if (!entry) goto failed;
+    PyObject* name = PyString_FromStringAndSize(column->name, (Py_ssize_t)strlen(column->name));
+    if (!name) { decref(entry); goto failed; }
+    PyTuple_SetItem(entry, 0, name);
+    for (int j = 1; j < 4; ++j) {
+      PyObject* number = PyInt_FromLong(j == 1 ? column->type : j == 2 ? column->size : column->offset);
+      if (!number) { decref(entry); goto failed; }
+      PyTuple_SetItem(entry, j, number);
+    }
+    PyTuple_SetItem(columns, i, entry);
+  }
+  answer = PyTuple_New(6);
+  if (!answer) goto failed;
+  PyTuple_SetItem(answer, 0, columns); columns = NULL;
+  const int metadata[5] = {data_length, objects, total_length, null_start, object_start};
+  for (int i = 0; i < 5; ++i) {
+    PyObject* number = PyInt_FromLong(metadata[i]);
+    if (!number) goto failed;
+    PyTuple_SetItem(answer, i + 1, number);
+  }
+  free(rows); return answer;
+failed:
+  free(rows); decref(kind); decref(tuple_type); decref(columns); decref(answer); return NULL;
+}
 static PyMethodDef io_methods[] = {
   {"read", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"write", io_write, 1, "Actual synchronous Win32 atomic write."},
   {"AtomicFileRead", io_read, 1, "Actual synchronous Win32 atomic read."},
-  {"AtomicFileWrite", io_write, 1, "Actual synchronous Win32 atomic write."}
+  {"AtomicFileWrite", io_write, 1, "Actual synchronous Win32 atomic write."},
+  {"row_descriptor_layout", row_descriptor_layout, 1, "Source-port descriptor layout; not a Blue heap type."}
 };
 static int install_io(void) {
   PyObject* module = PyModule_New("_client_prefs_io"); if (!module) return 0;
