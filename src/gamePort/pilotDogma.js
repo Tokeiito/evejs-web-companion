@@ -1,6 +1,7 @@
 "use strict";
 
 const { marshalDecode } = require("../gameProtocol/marshal");
+const { InventoryItems } = require("./inventoryItems");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
@@ -368,6 +369,11 @@ function createPilotDogma({
     // 2443: `if allInfo.charInfo`, and the character's inventory is primed. An answer with none of it (an empty
     // one, as Tranquility's and this server's are to a later priming in space) primes nothing of the character.
     if (items(all.get("charInfo")).length > 0) characterPrimed = true;
+    return finishAllInfo(all, held);
+  }
+
+  /** Post-ProcessAllInfo state retained by the existing godma attribute/effect reader. */
+  function finishAllInfo(all, held) {
     // 2427 to 2430: the brain, charInfo's second, given to the client's dogma location when it is made
     // (clientDogmaIM.GetDogmaLocation: once, so a later priming's is not taken), its version -1
     // (clientDogmaLocation.__init__: `initialBrain = (-1,) + charBrain[1:]`) so that any update the server sends
@@ -388,6 +394,41 @@ function createPilotDogma({
     const activeShip = all.get("activeShipID");
     if (Array.isArray(shipState) && shipState.length >= 3 && activeShip !== undefined && activeShip !== null) setWeaponBanks(activeShip, shipState[2]);
     return held;
+  }
+
+  /**
+   * ProcessAllInfo2435-2448 / PrimeLocation2380-2397: update each location BEFORE its passive inventory registration.
+   * The caller owns invByID reuse/force and lifetime, and invokes updateRows only when that location is new/forced.
+   * This does not fill inventory.cachedItems/listed or initialize clientDogmaLocation registration/effects.
+   */
+  async function processAllInfo(allInfo, { shipID, structureID, solarSystemID, stationID, primeLocation }) {
+    const all = fieldsOf(allInfo), held = [];
+    const nonempty = value => Boolean(value && Array.isArray(value.entries) && value.entries.length);
+    async function location(itemID, contents, locationID, priority, force = false) {
+      await primeLocation({ itemID, locationID, priority, force }, () => {
+        // The receiving Python dictionary's table order, followed by PrimeLocation's stable priority moves.
+        const table = new InventoryItems();
+        for (const [id, row] of contents && Array.isArray(contents.entries) ? contents.entries : []) table.set(key(id), { id, row });
+        const keys = [...table.values()].map(({ id }) => key(id));
+        for (const id of [...priority].reverse()) {
+          const at = keys.indexOf(key(id));
+          if (at >= 0) keys.unshift(...keys.splice(at, 1));
+        }
+        for (const id of keys) {
+          const entry = table.get(id);
+          loadRow(entry.id, entry.row);
+          held.push(key(entry.id));
+        }
+      });
+    }
+    const structure = all.get("structureInfo"), ship = all.get("shipInfo"), character = items(all.get("charInfo"));
+    if (nonempty(structure)) await location(structureID, structure, solarSystemID, [structureID, shipID, characterID]);
+    if (nonempty(ship)) await location(shipID, ship, solarSystemID ?? stationID, [shipID, characterID], shipID === structureID);
+    if (character.length > 0) {
+      await location(characterID, character[0], shipID, [characterID]);
+      characterPrimed = true;
+    }
+    return finishAllInfo(all, held);
   }
 
   /** baseDogmaLocation.SetWeaponBanks: a ship's banks, replacing what was held. {masterID: [slaveID, ...]}, or nothing. */
@@ -987,6 +1028,7 @@ function createPilotDogma({
     effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
     feed,
     loadAllInfo,
+    processAllInfo,
     multiEvent,
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),

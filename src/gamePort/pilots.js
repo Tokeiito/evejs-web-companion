@@ -1758,6 +1758,10 @@ function createGamePortPilots({
         typeFacts,
       }),
       dogmaLoaded: null,
+      /** Only godma ProcessAllInfo's structure/ship/character guards; not the full native invByID/starbase registry.
+       * The inventory cache owns each binding. These references keep its key and godma's public location only. */
+      godmaLocations: new Map(),
+      godmaPrimeVersion: 0,
       /** What the client does of its own accord for an item the server says has moved, one call after another: over when each is answered. */
       itemWork: Promise.resolve(),
       /** The pilot's scan probes as the client's scan service knows them (pilotScanner.js). */
@@ -2061,6 +2065,7 @@ function createGamePortPilots({
       // A new place, or a new ship: what dogma said of the old one is not about this one, and nor is what a container listed.
       if (LOCATION_ATTRIBUTES.some((name) => name in changes) || "shipid" in changes) {
         entry.dogmaLoaded = null;
+        entry.godmaPrimeVersion += 1;
         entry.listings.forget();
       }
       // invCache.ProcessSessionChange (143 to 168) and OnSessionChanged (173 to 181): the corporation's containers let
@@ -4380,9 +4385,7 @@ function createGamePortPilots({
       if (place.shipID === null) return;
       const item = entry.dogma.item(place.shipID);
       if (!item || positive(item.categoryID) !== CATEGORY_SHIP) return;
-      // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
-      ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-      const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(place.shipID), 0]));
+      const shipInventory = await cachedInventoryObject(entry, "GetInventoryFromId", [place.shipID, 0]);
       ledger.note("invbroker", "GetAvailableTurretSlots", shape("invbroker", "GetAvailableTurretSlots", [], null, contextFor(entry)));
       await entry.session.callBound(shipInventory, "GetAvailableTurretSlots", [], null);
     });
@@ -4628,6 +4631,8 @@ function createGamePortPilots({
 
   /** The asking itself. True where godma is primed for the ship in the place; false where dogma could not be asked; fails where the session is lost. */
   async function primeGodma(entry, place, loadedFor) {
+    const version = ++entry.godmaPrimeVersion;
+    const current = () => !entry.ended && entry.godmaPrimeVersion === version && primedFor(entry, whereabouts(entry)) === loadedFor;
     try {
       // godma.GetDogmaLM: the dogma location bound for where the pilot is, kept and asked everything of.
       ledger.note("dogmaIM", "GetAllInfo", DOGMA_AS_GODMA_PRIMES);
@@ -4637,11 +4642,38 @@ function createGamePortPilots({
       // not on its list of what to keep. `session.shipid and ...` and `session.structureid and ...` are None
       // where the session has none. So a session's first priming is (True, True, None), and each after it
       // (False, True, None); in a structure the third is True.
-      const asking = [!entry.dogma.holdsCharacter(), place.shipID ? true : null, place.structureID ? true : null];
+      const asking = [!entry.godmaLocations.has(entry.characterID), place.shipID ? true : null, place.structureID ? true : null];
       const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
+      if (!current()) return false;
       // What godma let go before it asked: every inventory but the character's.
       entry.dogma.purge();
-      entry.dogma.loadAllInfo(allInfo);
+      // This follows the existing managed purge scope only. Native invByID also
+      // has solar-system/starbase lifetimes which are not modeled by this registry.
+      for (const itemID of entry.godmaLocations.keys()) if (itemID !== entry.characterID) entry.godmaLocations.delete(itemID);
+      await entry.dogma.processAllInfo(allInfo, {
+        shipID: place.shipID,
+        structureID: place.structureID,
+        solarSystemID: attribute(entry, "solarsystemid"),
+        stationID: place.stationID,
+        primeLocation: async (stage, updateRows) => {
+          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+          const kept = entry.godmaLocations.get(stage.itemID);
+          if (kept && !stage.force) {
+            kept.locationID = stage.locationID;
+            return;
+          }
+          // Original PrimeLocation updates godma first, then passively binds.
+          // allInfo does not populate cachedItems, listed or backing self/type.
+          updateRows();
+          await cachedInventoryObject(entry, "GetInventoryFromId", [stage.itemID, 1]);
+          if (!current()) throw fail("CALL_REFUSED", "The pilot's godma location changed while priming.");
+          entry.godmaLocations.set(stage.itemID, {
+            container: entry.inventory.keyOf(stage.itemID, null),
+            locationID: stage.locationID,
+          });
+        },
+      });
+      if (!current()) return false;
       entry.allInfo = allInfo;
       entry.dogmaLoaded = loadedFor;
       if (entry.targetsOwed) targetsRefreshed(entry).catch(() => {});
@@ -5691,6 +5723,26 @@ function createGamePortPilots({
     return answeredObject(session, service, await session.call(service, method, argumentsToWire(args), kwargs ?? null));
   }
 
+  /** One invCache guard per key, whether requested by a page or godma/fitting.
+   * Register the pending bind without yielding first so concurrent callers share it.
+   * The existing inventory manager and pilotInventory own binding lifetimes. */
+  async function cachedInventoryObject(entry, method, args = [], kwargs = null) {
+    const container = inventoryContainerOf(entry, method, args);
+    // A failed pending bind resolves to null for waiters. As in bindObject's
+    // previous path, a waiter then asks again; only the initiator gets its error.
+    for (let pending = container === null ? null : entry.inventory.boundObject(container); pending;
+      pending = entry.inventory.boundObject(container)) {
+      const held = await pending;
+      if (held) return held;
+    }
+    ledger.note("invbroker", method, BOUND_AS_THE_CLIENT_BINDS);
+    const making = run(entry, "invbroker", method, () => bindRetail(entry, "invbroker", method, args, kwargs));
+    if (container !== null) entry.inventory.binding(container, making);
+    const objectID = await making;
+    if (!objectID) throw fail("BOUND_NO_OBJECT", `invbroker.${method} did not return a bound object.`);
+    return objectID;
+  }
+
   /** idCheckers.IsNPC(session.corpid): whether the pilot's corporation is an NPC one. */
   function inNpcCorporation(entry) {
     const corporationID = attribute(entry, "corpid");
@@ -6191,12 +6243,6 @@ function createGamePortPilots({
     // invCache.GetInventory and GetInventoryFromId: a container already held is the one given, and nothing is asked
     // (GetInventoryFromId 553 to 556, GetInventory 527 to 531); one being bound is waited for, and given.
     const container = service === "invbroker" ? inventoryContainerOf(entry, method, Array.isArray(args) ? args : []) : null;
-    const heldObject = container === null ? null : await (entry.inventory.boundObject(container) ?? null);
-    if (heldObject) {
-      const handle = randomBytes(24).toString("base64url");
-      entry.bound.set(handle, { objectID: heldObject, service, container });
-      return { boundHandle: handle, service, method, notifications: drain(entry) };
-    }
     if (method === "MachoBindObject" && !(service === "beyonce" && entry.space)) {
       // A Moniker: what it is bound by is settled now, from what the client's own carries (eveMoniker.py), and
       // nothing is sent until it is called. Nor is anything counted: its bind is, as the session sends it (noteSent).
@@ -6213,13 +6259,14 @@ function createGamePortPilots({
       entry.bound.set(made, own ?? { objectID: null, service, params });
       return { boundHandle: made, service, method, notifications: drain(entry) };
     }
-    ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
     let objectID;
     try {
-      const making = run(entry, service, method, async () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
-      // The container is being bound: held once it is, and given meanwhile to whoever asks for it (pilotInventory.js).
-      if (container !== null) entry.inventory.binding(container, making);
-      objectID = await making;
+      if (service === "invbroker" && (method === "GetInventory" || method === "GetInventoryFromId")) {
+        objectID = await cachedInventoryObject(entry, method, Array.isArray(args) ? args : [], kwargs);
+      } else {
+        ledger.note(service, method, BOUND_AS_THE_CLIENT_BINDS);
+        objectID = await run(entry, service, method, () => bindRetail(entry, service, method, Array.isArray(args) ? args : [], kwargs));
+      }
     } catch (error) {
       // The session's own word for a bind the server answered without an object.
       if (error.code === "CALL_FAILED" && / did not return a bound object\.| could not say where its object lives\./.test(error.message)) objectID = null;
@@ -6282,9 +6329,7 @@ function createGamePortPilots({
       // which the location's manager is asked for. Where the call comes on the manager's handle, the ship's inventory
       // is had first; where it comes on the ship's own inventory (the page's call), it goes there as it is.
       if (service === "invbroker" && method === "FitFitting" && object.params !== undefined) {
-        // invCache.GetInventoryFromId(itemid, passive=0), noted as the bind of an inventory it is.
-        ledger.note("invbroker", "GetInventoryFromId", BOUND_AS_THE_CLIENT_BINDS);
-        const shipInventory = answeredObject(entry.session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(form.args[0]), 0]));
+        const shipInventory = await cachedInventoryObject(entry, "GetInventoryFromId", [form.args[0], 0]);
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
