@@ -1522,6 +1522,257 @@ def _create_row_descriptor_protocol():
     return module
 
 
+def _create_row_protocol(protocol):
+    # Named source port of CCP PyRowSet.cpp and shipped Python2 slots. This is
+    # not the Blue heap type, its raw serializer, allocator or pointer hash.
+    import types
+    existing = globals().get('_companion_row_protocol')
+    if existing is not None:
+        if existing.descriptors is not protocol:
+            raise TypeError('Rows require the same VM descriptor protocol')
+        return existing
+    if protocol is not _create_row_descriptor_protocol():
+        raise TypeError('Rows require the actual named descriptor protocol')
+    io, raw_get, raw_set = _client_prefs_io, object.__getattribute__, object.__setattr__
+    Descriptor, DomainError = protocol.Descriptor, protocol.DomainError
+
+    def header(row):
+        return raw_get(row, '_row_header')
+
+    def stable(row, descriptor, columns):
+        if header(row) is not descriptor or descriptor._columns is not columns or descriptor._unsafe:
+            raise DomainError('Header mutation during a row operation is outside this capability')
+
+    def get(row, index):
+        descriptor = header(row)
+        io.row_index(descriptor, index)  # Also enforces the descriptor domain.
+        columns = descriptor._columns
+        column = descriptor._columns[index]
+        if column[1] == 0:
+            virtual = descriptor._virtual
+            if virtual is None:
+                raise RuntimeError('Internal error in VirtualGet; no mVirtualGetSet.')
+            if not isinstance(virtual, list):
+                raise RuntimeError("Internal error in VirtualGet;  mVirtualGetSet.o isn't a list.")
+            offset = column[3]
+            if offset < 0 or offset >= list.__len__(virtual):
+                raise RuntimeError('Internal error in VirtualGet; GetSet list has funky size.')
+            pair = list.__getitem__(virtual, offset)
+            if not isinstance(pair, tuple) or tuple.__len__(pair) < 2:
+                raise RuntimeError('Internal error in VirtualGet; Virtual column wrongly specified.')
+            result = tuple.__getitem__(pair, 1)(row)
+            stable(row, descriptor, columns)
+            return result
+        initialized = raw_get(row, '_row_initializing')
+        if initialized is not None and index not in initialized:
+            raise DomainError('Reading uninitialized native row memory is outside this capability')
+        return io.row_get(descriptor, raw_get(row, '_row_bytes'), raw_get(row, '_row_objects'), index)
+
+    def put(row, index, value):
+        descriptor = header(row)
+        columns = descriptor._columns
+        io.row_set(descriptor, raw_get(row, '_row_bytes'), raw_get(row, '_row_objects'), index, value)
+        stable(row, descriptor, columns)
+        initialized = raw_get(row, '_row_initializing')
+        if initialized is not None:
+            initialized.add(index)
+
+    def interval(row, low, high):
+        count = len(header(row))
+        low = min(max(low, 0), count)
+        return low, min(max(high, low), count)
+
+    def replace(row, low, high, values):
+        # PySequence_Fast is BEFORE clipping/length validation, and each write
+        # is committed before the next. Retain old object cells until cleanup.
+        sequence = io.row_sequence_fast(values)
+        low, high = interval(row, low, high)
+        count = len(sequence)
+        if high - low != count:
+            raise RuntimeError('Cannot modify row length')
+        garbage = []
+        for n in xrange(count):
+            index = low + n
+            if header(row)._columns[index][1] in (128, 129, 130):
+                garbage.append(get(row, index))
+            put(row, index, sequence[n])
+
+    def equal(left, right):
+        if type(right) is not Row:
+            return False
+        a, b = header(left), header(right)
+        if a._columns != b._columns:
+            return False
+        a_columns, b_columns = a._columns, b._columns
+        for i in xrange(len(a)):
+            comparison = io.row_compare(get(left, i), get(right, i))
+            stable(left, a, a_columns)
+            stable(right, b, b_columns)
+            if comparison:
+                return False
+        return True
+
+    def raw_state_unavailable(*args):
+        raise DomainError('Raw row serialization, reuse and Blue pickle identity are unavailable')
+
+    class Row(object):
+        __slots__ = ('_row_header', '_row_bytes', '_row_objects', '_row_initializing')
+        __module__ = 'companion.row'
+
+        def __new__(cls, *args, **ignored_keywords):
+            if cls is not Row:
+                raise DomainError('Native DBRow subclassing is unavailable')
+            return object.__new__(cls)
+
+        def __init__(self, *args, **ignored_keywords):
+            try:
+                raw_get(self, '_row_header')
+            except AttributeError:
+                pass
+            else:
+                raise DomainError('Repeated row initialization is outside this capability')
+            if not args:
+                raise ValueError('expected at least one argument')
+            first = args[0]
+            if type(first) is Row:
+                if len(args) != 1:
+                    raise TypeError('DBRow() takes exactly 1 argument (%d given)' % len(args))
+                if raw_get(first, '_row_initializing') is not None:
+                    raise DomainError('Copying an unfinished native row is outside this capability')
+                if header(first)._unsafe or header(first)._setting:
+                    raise DomainError('Copying an unsafe native row is outside this capability')
+                raw_set(self, '_row_header', header(first))
+                raw_set(self, '_row_bytes', bytearray(raw_get(first, '_row_bytes')))
+                raw_set(self, '_row_objects', list(raw_get(first, '_row_objects')))
+                raw_set(self, '_row_initializing', None)
+                return
+            if not isinstance(first, Descriptor):
+                raise TypeError('expected DBRow or DBRowDescriptor as first argument')
+            if len(args) > 3:
+                raise ValueError('expected at most two arguments')
+            packed, objects, real = io.row_storage(first)
+            raw_set(self, '_row_header', first)
+            raw_set(self, '_row_bytes', packed)
+            raw_set(self, '_row_objects', objects)
+            raw_set(self, '_row_initializing', None if len(args) == 1 else set())
+            if len(args) == 1:
+                return
+            # No eager list conversion: sequence size, warning, then each
+            # PySequence_GetItem/Set. Third reuse and all keywords are ignored.
+            count = io.row_sequence_size(args[1])
+            virtual = first._virtual
+            allowed = len(first) - (0 if virtual is None else list.__len__(virtual))
+            if count > allowed:
+                raise TypeError('Sequence must be at most %d elements' % allowed)
+            if count < allowed:
+                io.row_warning('sequence is too short')
+            for i in xrange(count):
+                put(self, i, io.row_sequence_item(args[1], i))
+            for i in xrange(count, allowed):
+                put(self, i, None)
+            raw_set(self, '_row_initializing', None)
+
+        def __len__(self):
+            return len(header(self))
+
+        def __getitem__(self, key):
+            return get(self, io.row_index(header(self), key))
+
+        def __setitem__(self, key, value):
+            put(self, io.row_index(header(self), key), value)
+
+        def __delitem__(self, key):
+            raise RuntimeError('cannot delete column')
+
+        def __getattribute__(self, name):
+            try:
+                descriptor = header(self)
+            except AttributeError:
+                return raw_get(self, name)
+            index = io.row_index(descriptor, name, 1)
+            return raw_get(self, name) if index is None else get(self, index)
+
+        def __setattr__(self, name, value):
+            index = io.row_index(header(self), name, 1)
+            if index is not None:
+                put(self, index, value)
+            elif name in Row.__slots__:
+                raise DomainError('Private row storage cannot be replaced')
+            else:
+                raw_set(self, name, value)
+
+        def __delattr__(self, name):
+            index = io.row_index(header(self), name, 1)
+            if index is not None:
+                raise RuntimeError('Cannot delete a column from a DBRow')
+            if name in Row.__slots__:
+                raise DomainError('Private row storage cannot be deleted')
+            object.__delattr__(self, name)
+
+        @property
+        def __header__(self):
+            return header(self)
+
+        @__header__.setter
+        def __header__(self, value):
+            if not isinstance(value, Descriptor):
+                raise TypeError('require a DBRowDescriptor instance')
+            current = header(self)
+            if current._storage[:2] != value._storage[:2]:
+                raise ValueError("header.Size() doesn't match")
+            if raw_get(self, '_row_initializing') is not None:
+                raise DomainError('Rebinding an unfinished native row is outside this capability')
+            raw_set(self, '_row_header', value)
+
+        @property
+        def __keys__(self):
+            return header(self).Keys()
+
+        @property
+        def __columns__(self):
+            return header(self).Keys()
+
+        def __getslice__(self, low, high):
+            low, high = interval(self, low, high)
+            return [get(self, i) for i in xrange(low, high)]
+
+        def __setslice__(self, low, high, values):
+            replace(self, low, high, values)
+
+        def __delslice__(self, low, high):
+            low, high = interval(self, low, high)
+            if high != low:
+                raise RuntimeError('Cannot modify row length')
+
+        def __repr__(self):
+            return '<DBRow object %s>' % repr([get(self, i) for i in xrange(len(header(self)))])
+
+        def __eq__(self, other):
+            return equal(self, other)
+
+        def __ne__(self, other):
+            return not equal(self, other)
+
+        def __cmp__(self, other):
+            if equal(self, other):
+                return 0
+            raise DomainError('Native row pointer ordering is outside this capability')
+
+        def __hash__(self):
+            raise DomainError('Native row pointer hashing is outside this capability')
+
+        __data__ = property(raw_state_unavailable, raw_state_unavailable)
+        __cdata__ = property(raw_state_unavailable, raw_state_unavailable)
+        __getstate__ = raw_state_unavailable
+        __setstate__ = raw_state_unavailable
+        __reduce_ex__ = raw_state_unavailable
+
+    result = types.ModuleType('companion.row_protocol')
+    result.Row, result.descriptors = Row, protocol
+    globals()['_companion_row_protocol'] = result
+    return result
+
+
 def _create_inventory_header_owner(service_types):
     # Core construction and the ONE Initialize108 field only. This selected
     # capability does not run invCache.Initialize's semaphore/service graph.

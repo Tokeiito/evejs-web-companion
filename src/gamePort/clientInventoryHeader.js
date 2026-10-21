@@ -2,6 +2,7 @@
 
 const { ClientInventoryDescriptor, ClientInventoryDescriptorNotReadyError } = require("./clientInventoryDescriptor");
 const { createClientRowDescriptor } = require("./clientRowDescriptor");
+const { createClientRow } = require("./clientRow");
 
 /** One native invCache header field, shared with the existing inventory owner.
  * Async JS demand is explicit; original compiled GetItemHeader runs warm only.
@@ -47,8 +48,18 @@ async function createClientInventoryHeader({ provider, staticService, getItemDes
       return instance.getAttr("LogInfo").call(Buffer.from(message, "ascii"), header);
     },
   });
+  let rows = null;
   return Object.freeze({
     instance, descriptors, staticService, context,
+    prepareRows() {
+      assertCurrent();
+      // One capability on this existing owner, using its SAME descriptor
+      // class. No second inventory/effect registry or eager row projection.
+      return rows ??= createClientRow({ provider, descriptors }).then(value => {
+        assertCurrent();
+        return value;
+      });
+    },
     GetItemHeader: force => cache.GetItemHeader(force),
     resetHeader: () => cache.resetHeader(),
     warmHeader() {

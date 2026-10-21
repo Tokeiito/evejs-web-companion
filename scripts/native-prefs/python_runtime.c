@@ -54,6 +54,16 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(int, PyTuple_SetItem, (PyObject*, Py_ssize_t, PyObject*)) \
  X(PyObject*, PyList_New, (Py_ssize_t)) \
  X(int, PyList_SetItem, (PyObject*, Py_ssize_t, PyObject*)) \
+ X(Py_ssize_t, PyList_Size, (PyObject*)) \
+ X(PyObject*, PyList_GetItem, (PyObject*, Py_ssize_t)) \
+ X(PyObject*, PyByteArray_FromStringAndSize, (const char*, Py_ssize_t)) \
+ X(char*, PyByteArray_AsString, (PyObject*)) \
+ X(Py_ssize_t, PyByteArray_Size, (PyObject*)) \
+ X(Py_ssize_t, PySequence_Size, (PyObject*)) \
+ X(PyObject*, PySequence_GetItem, (PyObject*, Py_ssize_t)) \
+ X(PyObject*, PySequence_Fast, (PyObject*, const char*)) \
+ X(int, PyObject_Cmp, (PyObject*, PyObject*, int*)) \
+ X(int, PyErr_WarnEx, (PyObject*, const char*, Py_ssize_t)) \
  X(int, PyArg_ParseTuple, (PyObject*, const char*, ...)) \
  X(int, PyType_IsSubtype, (PyObject*, PyObject*)) \
  X(PyObject*, PyString_FromStringAndSize, (const char*, Py_ssize_t)) \
@@ -67,6 +77,10 @@ typedef char check_method_def_size[(sizeof(PyMethodDef) == 32) ? 1 : -1];
  X(PyObject*, PyInt_FromLong, (long)) \
  X(long, PyInt_AsLong, (PyObject*)) \
  X(PyObject*, PyLong_FromString, (char*, char**, int)) \
+ X(long long, PyLong_AsLongLong, (PyObject*)) \
+ X(unsigned long long, PyLong_AsUnsignedLongLong, (PyObject*)) \
+ X(PyObject*, PyLong_FromLongLong, (long long)) \
+ X(PyObject*, PyLong_FromUnsignedLongLong, (unsigned long long)) \
  X(PyObject*, PyFloat_FromDouble, (double)) \
  X(double, PyFloat_AsDouble, (PyObject*)) \
  X(PyObject*, PyErr_Occurred, (void)) \
@@ -83,7 +97,7 @@ BINDINGS(DECLARE)
 #undef DECLARE
 
 static PyObject *none_object, *int_type, *long_type, *float_type, *bool_type, *str_type, *unicode_type;
-static PyObject **exc_type, **exc_value, **exc_runtime, **exc_io, **exc_memory, **exc_key, **exc_index;
+static PyObject **exc_type, **exc_value, **exc_runtime, **exc_io, **exc_memory, **exc_key, **exc_index, **exc_warning;
 static PyObject** exc_windows;
 static HMODULE python_dll;
 static PyObject* globals;
@@ -484,13 +498,23 @@ static PyObject* descriptor_method(PyObject* self, PyObject* args) {
   if (index < 0 || index >= 4) { PyErr_SetString(*exc_value, "Unknown source-port descriptor method"); return NULL; }
   return PyCFunction_NewEx(&descriptor_methods[index], owner, NULL);
 }
+#include "row_storage.h"
 static PyMethodDef io_methods[] = {
   {"read", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"write", io_write, 1, "Actual synchronous Win32 atomic write."},
   {"AtomicFileRead", io_read, 1, "Actual synchronous Win32 atomic read."},
   {"AtomicFileWrite", io_write, 1, "Actual synchronous Win32 atomic write."},
   {"row_descriptor_layout", row_descriptor_layout, 1, "Source-port descriptor layout; not a Blue heap type."},
-  {"row_descriptor_method", descriptor_method, 1, "Bind source-port descriptor protocol to its named wrapper."}
+  {"row_descriptor_method", descriptor_method, 1, "Bind source-port descriptor protocol to its named wrapper."},
+  {"row_storage", row_storage, 8, "Allocate named row scalar bytes and owned object references."},
+  {"row_get", row_get, 1, "Read source-selected native typed row cell."},
+  {"row_set", row_set, 1, "Write source-selected native typed row cell."},
+  {"row_index", row_index, 1, "Installed byte/int column admission."},
+  {"row_sequence_size", row_sequence_size, 8, "Original InitSeq sequence size."},
+  {"row_sequence_item", row_sequence_item, 1, "Original InitSeq ordered item read."},
+  {"row_sequence_fast", row_sequence_fast, 8, "Original slice sequence admission."},
+  {"row_warning", row_warning, 1, "Original row UserWarning and filter behavior."},
+  {"row_compare", row_compare, 1, "Original Python2 cell comparison."}
 };
 static int install_io(void) {
   PyObject* module = PyModule_New("_client_prefs_io"); if (!module) return 0;
@@ -530,6 +554,7 @@ static int bind_api(napi_env env, HMODULE dll) {
   EXC(exc_io, "PyExc_IOError") EXC(exc_memory, "PyExc_MemoryError")
   EXC(exc_windows, "PyExc_WindowsError")
   EXC(exc_key, "PyExc_KeyError") EXC(exc_index, "PyExc_IndexError")
+  EXC(exc_warning, "PyExc_UserWarning")
 #undef EXC
   if (!prefs_log_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 logging C API export missing."); return 0; }
   if (!prefs_timer_bind(dll, log_owner_guard)) { bridge_error(env, "Required Python27 tasklet timer C API export missing."); return 0; }

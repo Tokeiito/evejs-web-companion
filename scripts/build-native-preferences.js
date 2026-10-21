@@ -3,7 +3,7 @@
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), crypto = require("node:crypto");
 const { execFile } = require("node:child_process"), { promisify } = require("node:util");
 const execute = promisify(execFile), builds = new Map();
-const sources = ["python_runtime.c", "atomic_files.c", "atomic_files.h", "log_backend.c", "log_backend.h", "tasklet_timer.c", "tasklet_timer.h"];
+const sources = ["python_runtime.c", "row_storage.h", "atomic_files.c", "atomic_files.h", "log_backend.c", "log_backend.h", "tasklet_timer.c", "tasklet_timer.h"];
 async function buildNativePreferences({ cacheRoot = path.join(__dirname, "..", "data", "native-preferences", "bindings") } = {}) {
   if (process.platform !== "win32" || process.arch !== "x64") throw new Error("Native client preferences require Windows x64.");
   // Capture every compilation input before the first await. Build and hash
