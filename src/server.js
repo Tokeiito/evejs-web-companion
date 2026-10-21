@@ -36,6 +36,7 @@ const { createClientDogmaStaticTypeData } = require("./gamePort/clientDogmaStati
 const { createClientDogmaStaticAttributeData } = require("./gamePort/clientDogmaStaticAttributeData");
 const { createClientDogmaStaticEffectData } = require("./gamePort/clientDogmaStaticEffectData");
 const { createClientDogmaStaticGroupData } = require("./gamePort/clientDogmaStaticGroupData");
+const { createClientDogmaStaticLoadData } = require("./gamePort/clientDogmaStaticLoadData");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -251,6 +252,14 @@ const gamePortPilots = options.gamePortPilots !== undefined
         messages: ids => clientWords.messages(ids),
         constants: () => clientConstants.dogmaStaticGroups(),
         language: () => clientWords.status().language,
+      }),
+      createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
+        ...readers,
+        constants: () => clientConstants.dogmaStaticLoadTail(),
+        prepareTypeInputs: async ids => {
+          const rows = await Promise.all([clientBuiltData.rows("typeDogma", ids), clientBuiltData.rows("types", ids)]);
+          if (rows.some(table => table === null)) throw new Error("Installed static-load selected type rows are unavailable.");
+        },
       }),
       // Local type values for the future native attribute-object factory.
       // Preparing them never registers an item or supplies an accurate value.

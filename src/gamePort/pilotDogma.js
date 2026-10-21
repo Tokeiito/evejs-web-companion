@@ -305,6 +305,7 @@ function createPilotDogma({
   createNativeClientStaticAttributeData = null,
   createNativeClientStaticEffectData = null,
   createNativeClientStaticGroupData = null,
+  createNativeClientStaticLoadData = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
@@ -312,6 +313,7 @@ function createPilotDogma({
   const clientStaticAttributeData = createNativeClientStaticAttributeData ? createNativeClientStaticAttributeData() : null;
   const clientStaticEffectData = createNativeClientStaticEffectData ? createNativeClientStaticEffectData() : null;
   const clientStaticGroupData = createNativeClientStaticGroupData ? createNativeClientStaticGroupData() : null;
+  const clientStaticLoadData = createNativeClientStaticLoadData ? createNativeClientStaticLoadData({ groupData: clientStaticGroupData, definitionData: clientStaticAttributeData, typeData: nativeClientStaticTypeData }) : null;
   // One pilot's local lookup prerequisite. Creating this facade is not native
   // service Run/LoadTypeAttributes, service acquisition or IM publication.
   const clientStaticTypeLookup = nativeClientStaticTypeData ? createClientDogmaStaticTypeLookup({
@@ -1293,6 +1295,19 @@ function createPilotDogma({
     nativeClientStaticGroupData: () => {
       if (!clientStaticGroupData) throw new ClientDogmaConstructorPrimitiveNotReadyError("complete installed type/group/English inputs");
       return clientStaticGroupData;
+    },
+    nativeClientStaticLoadData: () => {
+      if (!clientStaticLoadData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static-load tail inputs");
+      return clientStaticLoadData;
+    },
+    initializeNativeClientStaticTypeLookup: world => {
+      if (!clientStaticLoadData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static type lookup phase");
+      return clientStaticLoadData.loadTypeAttributes(world);
+    },
+    initializeNativeClientStaticLoadTail: async world => {
+      if (!clientStaticLoadData) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed static-load tail inputs");
+      await clientStaticLoadData.ready();
+      return clientStaticLoadData.loadTail(world);
     },
     nativeClientStaticTypeLookup: () => {
       if (!clientStaticTypeLookup) throw new ClientDogmaStaticTypeDataNotReadyError();

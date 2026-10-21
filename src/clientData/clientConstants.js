@@ -40,6 +40,11 @@ const DOGMA_STATIC_ATTRIBUTE_NAMES = Object.freeze([
 // A module that imports others is `given` those it uses while it is run, from the same archive and in the
 // order they need each other, and has the ones it does not use stood in for (`stubs`).
 const CONSTANTS = Object.freeze({
+  dogmaStaticLoadTail: Object.freeze({
+    module: "dogma/const.pyj",
+    given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"])]),
+    names: Object.freeze(["attributeFactionID", ...["groupControlBunker", "categoryModule", "categoryStructureModule", "categoryStarbase"].map(name => `inventorycommon.const.${name}`)]),
+  }),
   dogmaStaticGroups: Object.freeze({ module: "inventorycommon/const.pyj", names: Object.freeze(["categoryCharge"]) }),
   dogmaStaticEffects: Object.freeze({
     module: "dogma/const.pyj",
@@ -212,6 +217,14 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
 
   return {
     available,
+    dogmaStaticLoadTail: () => read("dogmaStaticLoadTail", values => {
+      const result = {};
+      for (const path of CONSTANTS.dogmaStaticLoadTail.names) {
+        if (!Number.isSafeInteger(values[path])) throw new Error(`The client's ${path} is not an integer constant.`);
+        result[path.split(".").at(-1)] = values[path];
+      }
+      return Object.freeze(result);
+    }),
     dogmaStaticGroups: () => read("dogmaStaticGroups", values => {
       if (!Number.isSafeInteger(values.categoryCharge)) throw new Error("The client's categoryCharge is not an integer constant.");
       return Object.freeze({ categoryCharge: values.categoryCharge });
