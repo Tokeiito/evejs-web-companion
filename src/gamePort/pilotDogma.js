@@ -8,6 +8,7 @@ const { createGodmaNumericEffects } = require("./godmaNumericEffects");
 const { createGodmaPrimeChannel } = require("./godmaPrimeChannel");
 const { createGodmaAttributeGetter } = require("./godmaAttributeGetter");
 const { GodmaAttributeDataNotReadyError } = require("./godmaAttributeData");
+const { evaluateGodmaCharge, floatDivideRecords, scaleRealRecords } = require("./godmaChargeValue");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -308,6 +309,9 @@ function createPilotDogma({
       attributeKey: id => nativeAttributeData.name(id),
       readAttribute: (itemID, attributeID) => nativeAttributeRecord(itemID, attributeID).value,
       readAttributeRecord: (itemID, name) => nativeAttributeRecord(itemID, nativeAttributeData.definitionByName(name).attributeID),
+      evaluateCharge: evaluateGodmaCharge,
+      floatDivide: floatDivideRecords,
+      scaleReal: scaleRealRecords,
       // Blue Marshal.ReadObjectDict1330-1345 inserts into a new Python dict;
       // RefreshItemAttributes iterates that receiving table, not wire order.
       attributeEntries: entries => orderEntries(entries.map(([id, value, kind]) => [number(id), value, kind])),
@@ -332,7 +336,7 @@ function createPilotDogma({
     typeFacts: typeID => typeFacts(number(typeID)),
     fieldsOf: row => new Map(Object.entries(rowFields(row) ?? {})),
   }) : null;
-  function nativeAttributeRecord(itemID, attributeID, at = now()) {
+  function nativeAttributeRecord(itemID, attributeID, at) {
     if (!nativeAttributeGetter) throw new GodmaAttributeDataNotReadyError("Native numeric getter requires installed attribute definitions.");
     return nativeAttributeGetter.record(key(itemID), attributeID, at);
   }
@@ -1229,14 +1233,14 @@ function createPilotDogma({
     inventoryLocationLoaded: (locationID) => primeInventory.locationLoaded(locationID),
     // Cache-only numeric value lookup; undefined is a cache miss. Static
     // defaults and the complete native ItemWrapper GetAttribute are separate.
-    numericValue: (itemID, attributeID, at = now()) => numericValues.value(key(itemID), attributeID, at),
+    numericValue: (itemID, attributeID, at) => numericValues.value(key(itemID), attributeID, at),
     // Internal immutable source records, never bridge JSON or a guessed class
-    // from Number.isInteger. Derived recharge results have unknown kind here.
-    numericValueRecord: (itemID, attributeID, at = now()) => numericValues.record(key(itemID), attributeID, at),
+    // from Number.isInteger. Native recharge results have derived source kinds.
+    numericValueRecord: (itemID, attributeID, at) => numericValues.record(key(itemID), attributeID, at),
     numericChargeInputs: (itemID, attributeID) => numericValues.chargeInputs(key(itemID), attributeID),
     // Synchronous known numeric attributes only: native cached/default getter.
     // No implicit ready(), typeDogma/RPC, loaded node or wrapper computation.
-    getAttributeValueByID: (itemID, attributeID, at = now()) => nativeAttributeRecord(itemID, attributeID, at).value,
+    getAttributeValueByID: (itemID, attributeID, at) => nativeAttributeRecord(itemID, attributeID, at).value,
     getAttributeRecordByID: nativeAttributeRecord,
     // Named backing fields only, not EffectWrapper methods, native eventbus
     // completion or clientDogmaLocation passive/registered-node state.

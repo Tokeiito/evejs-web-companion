@@ -3,12 +3,15 @@
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
 // Cached numeric value/charge state. A native caller supplies GetAttribute for
 // notice comparison; definitions, effect rows, metadata and nodes live outside.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null }) {
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null, evaluateCharge = null, floatDivide = null, scaleReal = null }) {
   const attributes = new Map(), charged = new Map();
   // Python retains the numeric class when assigning a decoded value. Keep its
   // immutable source record beside the primitive, before normalization/copying.
   const kinds = new Map(), chargedInputs = new Map();
   const cell = (value, kind) => Object.freeze({ value, kind });
+  // Python numeric truth keeps NaN true; JavaScript Boolean(NaN) is false.
+  // Preserve the legacy reader while admitting native numeric operands.
+  const chargeOperandPresent = value => readAttributeRecord && typeof value === "number" ? value !== 0 : Boolean(value);
   // Native caches are name-keyed: distinct installed IDs can share a name.
   // Freshness remains keyed by the incoming ID, before this mapping.
   const namedPairs = () => new Map([...chargedPairs].map(([id, pair]) => [attributeKey(id), pair.map(attributeKey)]));
@@ -20,17 +23,22 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     if (typeof b === "bigint" && typeof a === "number") return Number.isInteger(a) && b === BigInt(a);
     return a === b;
   }
-  function value(itemID, attributeID, at = now()) {
+  function value(itemID, attributeID, at) {
     return read(itemID, attributeKey(attributeID), at);
   }
-  function read(itemID, name, at = now()) {
+  function chargedRecord(itemID, name, at) {
     const state = charged.get(itemID)?.get(name);
-    return state ? chargeValue(...state, at) : attributes.get(itemID)?.get(name);
+    if (!state) return undefined;
+    if (!evaluateCharge) return cell(chargeValue(...state, at === undefined ? now() : at), undefined);
+    const inputs = chargedInputs.get(itemID).get(name);
+    return evaluateCharge(inputs.amount, state[1], inputs.tau, inputs.capacity, at === undefined || at === null ? now : at);
   }
-  function record(itemID, name, at = now()) {
-    // A recharge result is derived. Its Python arithmetic/class is a separate
-    // port; never label it with an earlier operand's decoded opcode.
-    if (charged.get(itemID)?.has(name)) return cell(read(itemID, name, at), undefined);
+  function read(itemID, name, at) {
+    return charged.get(itemID)?.has(name) ? chargedRecord(itemID, name, at).value : attributes.get(itemID)?.get(name);
+  }
+  function record(itemID, name, at) {
+    // The native evaluator supplies a derived class, never an operand opcode.
+    if (charged.get(itemID)?.has(name)) return chargedRecord(itemID, name, at);
     const values = attributes.get(itemID);
     return values?.has(name) ? cell(values.get(name), kinds.get(itemID)?.get(name)) : undefined;
   }
@@ -83,7 +91,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
       if (!pairs.has(id)) continue;
       if (!charged.has(itemID)) charged.set(itemID, new Map());
       const [tau, cap] = pairs.get(id);
-      if (values.get(tau) && values.get(cap)) createCharged(itemID, id, amount, time, pairs, valueKinds.get(id));
+      if (chargeOperandPresent(values.get(tau)) && chargeOperandPresent(values.get(cap))) createCharged(itemID, id, amount, time, pairs, valueKinds.get(id));
     }
   }
   function change(itemID, attributeID, time, amount, kind) {
@@ -101,18 +109,30 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     else for (const [id, [tau, cap]] of pairs) {
       if (name === cap) {
         if (charged.get(itemID)?.has(id)) {
-          let amountNow = read(itemID, id);
-          if (equal(amountNow, old)) amountNow *= Number(amount) / Number(old);
-          if (amountNow > amount) amountNow = amount;
-          createCharged(itemID, id, amountNow, time, pairs);
-        } else if (values.get(tau) && values.get(cap)) createCharged(itemID, id, values.get(id), time, pairs, kinds.get(itemID)?.get(id));
-      } else if (name === tau && charged.get(itemID)?.has(id)) createCharged(itemID, id, read(itemID, id), time, pairs);
+          if (evaluateCharge) {
+            let current = record(itemID, id);
+            // Native computes float(new)/old even when charge != old.
+            const ratio = floatDivide(cell(amount, kind), cell(old, undefined));
+            if (equal(current.value, old)) current = scaleReal(current, ratio);
+            if (current.value > amount) current = cell(amount, kind);
+            createCharged(itemID, id, current.value, time, pairs, current.kind);
+          } else {
+            let amountNow = read(itemID, id);
+            if (equal(amountNow, old)) amountNow *= Number(amount) / Number(old);
+            if (amountNow > amount) amountNow = amount;
+            createCharged(itemID, id, amountNow, time, pairs);
+          }
+        } else if (chargeOperandPresent(values.get(tau)) && chargeOperandPresent(values.get(cap))) createCharged(itemID, id, values.get(id), time, pairs, kinds.get(itemID)?.get(id));
+      } else if (name === tau && charged.get(itemID)?.has(id)) {
+        const current = record(itemID, id);
+        createCharged(itemID, id, current.value, time, pairs, current.kind);
+      }
     }
     return true;
   }
   return {
     refresh, change, value,
-    record: (itemID, attributeID, at = now()) => record(itemID, attributeKey(attributeID), at),
+    record: (itemID, attributeID, at) => record(itemID, attributeKey(attributeID), at),
     chargeInputs: (itemID, attributeID) => chargedInputs.get(itemID)?.get(attributeKey(attributeID)),
     has: itemID => attributes.has(itemID),
     drop(ids) { for (const id of ids) { attributes.delete(id); charged.delete(id); kinds.delete(id); chargedInputs.delete(id); } },
