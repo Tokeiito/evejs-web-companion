@@ -17,9 +17,12 @@
     onToggleMinimize,
     onMove,
     onResize,
+    headerActions,
+    loading = false,
+    resizable = true,
     children,
   }: {
-    win: WinState;
+    win: Pick<WinState, "x" | "y" | "w" | "h" | "z" | "minimized"> & { readonly id?: string | number };
     title: string;
     focused: boolean;
     onFocus: () => void;
@@ -28,6 +31,9 @@
     onToggleMinimize: () => void;
     onMove: (x: number, y: number) => void;
     onResize: (w: number, h: number) => void;
+    headerActions?: Snippet;
+    loading?: boolean;
+    resizable?: boolean;
     children: Snippet;
   } = $props();
 
@@ -109,6 +115,7 @@
   -->
   <header class="win-bar" onpointerdown={startDrag} ondblclick={onToggleMinimize}>
     <span class="win-title">{title}</span>
+    {#if headerActions}{@render headerActions()}{/if}
     <span class="win-actions">
       <!--
         ⚠ TWO BUTTONS, NOT THREE. There used to be a "collapse" that shaded a
@@ -141,13 +148,15 @@
     </span>
   </header>
 
-  <div class="win-body">
+  <div class="win-body" inert={loading} aria-busy={loading}>
     {@render children()}
   </div>
+  {#if resizable}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span class="win-resize win-resize-e" title="Resize" onpointerdown={(e) => startResize(e, "e")}></span>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span class="win-resize win-resize-s" title="Resize" onpointerdown={(e) => startResize(e, "s")}></span>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span class="win-resize win-resize-se" title="Resize" onpointerdown={(e) => startResize(e, "se")}></span>
+  {/if}
 </section>

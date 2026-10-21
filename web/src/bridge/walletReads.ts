@@ -78,6 +78,8 @@ export interface WalletReads {
    * thirty days, else a year and a month (1 to 12). Each is kept until any account changes (OnAccountChange, 64).
    */
   journal(year: number | null, month: number | null): Promise<JsonValue>;
+  /** accountsvc.GetCorpTransactions123-130: separate cache by account key, year and month. */
+  corporateJournal(accountKey: number, year: number | null, month: number | null): Promise<JsonValue>;
   /** account.GetEntryTypes, asked once for the pilot and kept (GetStaticData). */
   entryKinds(): Promise<JsonValue>;
   /**
@@ -166,8 +168,11 @@ export function divisionNamesOf(corporation: JsonValue): Record<string, string |
   const names: Record<string, string | null> = {};
   for (let division = 1; division <= CORP_DIVISION_COUNT; division += 1) {
     const at = division === 1 ? -1 : header.indexOf(`walletDivision${division}`);
-    const value = at >= 0 ? line[at] : null;
-    names[String(division)] = typeof value === "string" && value.trim() !== "" ? value : null;
+    const raw = at >= 0 ? line[at] : null;
+    const value = raw && typeof raw === "object" && "type" in raw && raw.type === "wstring" && "value" in raw ? raw.value : raw;
+    // bco_corporations.GetDivisionNames138-154 uses truthiness, retaining a
+    // nonempty whitespace name as well as the native Unicode row value.
+    names[String(division)] = typeof value === "string" && value !== "" ? value : null;
   }
   return names;
 }
@@ -180,6 +185,7 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
   const wealth = keptOnce(cash);
   // accountsvc.transactionCache: each period's journal, kept by its year and month, all let go together.
   const periods = new Map<string, Kept>();
+  const corporatePeriods = new Map<string, Kept>();
   const ledgerFor = (year: number | null, month: number | null): Kept => {
     const key = `${year ?? "-"}:${month ?? "-"}`;
     let kept = periods.get(key);
@@ -190,7 +196,7 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
     return kept;
   };
   const forgetLedgers = (): void => {
-    for (const each of periods.values()) each.forget();
+    for (const each of [...periods.values(), ...corporatePeriods.values()]) each.forget();
   };
   const ledger = ledgerFor(null, null);
   const corporationRow = keptOnce(() => ask("corpRegistry", "GetCorporation", []));
@@ -207,6 +213,15 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
     cash,
     wealth: () => wealth.read(),
     journal: (year, month) => ledgerFor(year, month).read(),
+    corporateJournal(accountKey, year, month) {
+      const key = `${accountKey}:${year ?? "-"}:${month ?? "-"}`;
+      let kept = corporatePeriods.get(key);
+      if (!kept) {
+        kept = keptOnce(() => ask("account", "GetTransactions", [accountKey, year, month, true]));
+        corporatePeriods.set(key, kept);
+      }
+      return kept.read();
+    },
     entryKinds: () => kinds.read(),
     async read(how = {}) {
       if (how.fresh === true) {
@@ -258,6 +273,7 @@ export function createWalletReads(ask: Ask, deps: WalletDeps = {}): WalletReads 
     },
     corporationChanged() {
       corporationRow.forget();
+      for (const each of corporatePeriods.values()) each.forget();
     },
     forget() {
       for (const each of [kinds, wealth, corporationRow, divisionsKept]) each.forget();

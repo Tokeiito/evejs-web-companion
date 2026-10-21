@@ -7,10 +7,20 @@
   import { DATE_LABELS, formatTemplate, plainText, locationKind } from "../bridge/clientWords.ts";
   import { resolvedName } from "../store/names.ts";
   import { showInfo } from "./showInfo.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
   import { focusMail } from "./mailFocus.ts";
   import ContactActionDialog from "./ContactActionDialog.svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
+  import OwnerDuelMenu from "./OwnerDuelMenu.svelte";
+  import OwnerTradeMenu from "./OwnerTradeMenu.svelte";
+  import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
+  import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
+  import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
+  import OwnerCEOMenu from "./OwnerCEOMenu.svelte";
+  import OwnerDecorationMenu from "./OwnerDecorationMenu.svelte";
+  import OwnerCorporationInviteMenu from "./OwnerCorporationInviteMenu.svelte";
+  import OwnerCorporationCashMenu from "./OwnerCorporationCashMenu.svelte";
   import MemberFleetInvites from "./MemberFleetInvites.svelte";
   import type { ContactScope, NamedAddressBook } from "../bridge/contacts.ts";
   import type { ContactAction } from "./contactAction.ts";
@@ -37,7 +47,6 @@
     location: "UI/Common/Location", faction: "UI/Corporations/CorporationWindow/Members/FactionEnlistment",
     logon: "UI/Common/Online", logoff: "UI/Common/Offline", none: "UI/Generic/None", unknown: "UI/Generic/Unknown",
     empty: "UI/Common/NoDataAvailable", info: "UI/Commands/ShowInfo", mail: "UI/EVEMail/SendPilotEVEMail",
-    viewMember: "UI/Corporations/Common/ViewCorpMemberDetails", editMember: "UI/Corporations/Common/EditCorpMember",
     addContact: "UI/PeopleAndPlaces/AddContact", editContact: "UI/PeopleAndPlaces/EditContact", removeContact: "UI/PeopleAndPlaces/RemoveContact",
     block: "UI/PeopleAndPlaces/BlockContact", unblock: "UI/PeopleAndPlaces/UnblockContact",
     addCorpContact: "UI/PeopleAndPlaces/AddCorpContact", editCorpContact: "UI/PeopleAndPlaces/EditCorpContact", removeCorpContact: "UI/PeopleAndPlaces/RemoveCorpContact",
@@ -314,10 +323,18 @@
         {/if}
         <MemberFleetInvites {store} {flow} targets={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         {#if selected.length === 1}
+          <OwnerDuelMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />
+          <OwnerTradeMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />
           <OwnerChatMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />
           <OwnerFleetMenu {store} {flow} ownerID={selected[0]!.member.characterID} {openWatchlist} onDone={() => menuFor = null} />
         {/if}
-        {#if selected.length === 1}<button type="button" class="minor" onclick={() => { const id = selected[0]!.member.characterID; menuFor = null; flow.showMemberDetails(id); }}>{word(director ? LABELS.editMember : LABELS.viewMember, director ? "Edit Member" : "View Member Details")}</button>{/if}
+        {#if selected.length === 1}<OwnerMemberMenu {store} {flow} ownerID={selected[0]!.member.characterID} onDone={() => menuFor = null} />{/if}
+        <OwnerQuitMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerExpelMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerCEOMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerDecorationMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerCorporationInviteMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
+        <OwnerCorporationCashMenu {store} {flow} ownerIDs={selected.map(row => row.member.characterID)} onDone={() => menuFor = null} />
         <button type="button" class="minor" aria-label="Close member actions" onclick={() => menuFor = null}>×</button>
       </div>
     {/if}
@@ -327,7 +344,7 @@
         <tbody>{#each rows as row (row.member.characterID)}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions (native table row; its name button provides keyboard selection) -->
         <!-- svelte-ignore a11y_click_events_have_key_events (keyboard selection and context menu are on the row's name button) -->
-        <tr class:selected={chosen.includes(row.member.characterID)} onclick={(event) => { if (!(event.target as Element).closest("button,input")) select(event, row.member.characterID); }} ondblclick={() => showInfo({ kind: "character", characterID: row.member.characterID })} oncontextmenu={(event) => openMenu(event, row.member.characterID)}>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
+        <tr class:selected={chosen.includes(row.member.characterID)} onclick={(event) => { if (!(event.target as Element).closest("button,input")) select(event, row.member.characterID); }} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) void doubleClickOwner(flow, row.member.characterID).catch(cause => { if (cause?.code !== "SESSION_REQUEST_RETIRED") error = cause instanceof Error ? cause.message : String(cause); }); }} oncontextmenu={(event) => openMenu(event, row.member.characterID)}>{#each columns as [key, label, fallback]}<td data-label={word(label!, fallback!)}>
           {#if key === "name"}
             <span class="member-entry">
               <input type="checkbox" aria-label={`Select ${row.text.name}`} checked={chosen.includes(row.member.characterID)} onchange={() => { chosen = chosen.includes(row.member.characterID) ? chosen.filter(id => id !== row.member.characterID) : [...chosen, row.member.characterID]; anchor = rows.indexOf(row); menuFor = null; }} />

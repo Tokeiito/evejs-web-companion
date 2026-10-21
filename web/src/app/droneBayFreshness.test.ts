@@ -207,6 +207,12 @@ function makeWorld() {
         cargo: { list: [], capacity: null, error: null },
         volumes: {},
       };
+    } else if (path === "/api/bridge/call" && asked.service === "itemLocking") {
+      // Original invCache.Add1009-1016 reads persistent locks before backing type and acquisition.
+      body = { ok: true, service: asked.service, method: asked.method, result: { type: "dict", entries: [] }, notifications: [] };
+    } else if (path === "/api/bridge/call" && asked.service === "invbroker" && asked.method === "GetSelfInvItem") {
+      // Supplied Tristan self metadata; this read does not load the bay.
+      body = { ok: true, service: asked.service, method: asked.method, result: { type: "packedrow", fields: { itemID: DRONE_BOAT, typeID: 593 } }, notifications: [] };
     } else if (path === "/api/bridge/call" && asked.service === "invbroker") {
       // The move itself, the page's own call since 2026-10-14, is what put the drones in the bay.
       state.bayLoaded = true;

@@ -6,7 +6,7 @@
 // The opaque bridgeSessionID never appears here: the BFF holds it server-side
 // in its cookie-session store and attaches it to bridge calls itself.
 
-import { BridgeCallError, callMethod } from "../bridge/callMethod.ts";
+import { BridgeCallError, callMethod, refusalOfBody } from "../bridge/callMethod.ts";
 import type { Ask } from "../bridge/ask.ts";
 import type { CorporationRoleData, CorporationRoleGroupSpec } from "../bridge/corporationRoles.ts";
 import { decodeBoundDogma, type BoundDogma } from "../bridge/boundDogma.ts";
@@ -85,6 +85,8 @@ export interface SelectResult {
 }
 
 export interface ApiOptions {
+  /** An owning native tasklet may retire independently of the pilot session. */
+  readonly signal?: AbortSignal;
   /** Base URL prefix; default "" (same-origin against the BFF). */
   readonly baseUrl?: string;
   /** Injectable fetch for tests; default globalThis.fetch. */
@@ -182,7 +184,8 @@ async function requestJson(
     };
     response = await bridgeLane.run(options.priority ?? "read", path, () => {
       assertCurrent?.();
-      return doFetch(url, { signal: AbortSignal.timeout(REQUEST_DEADLINE_MS), ...request });
+      const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
+      return doFetch(url, { signal: options.signal ? AbortSignal.any([deadline, options.signal]) : deadline, ...request });
       // A request that goes on the tab's open socket holds none of the browser's connections, and so no lane.
     }, { carried: options.fetch === undefined && pageCarries(url, request) });
   } catch (cause) {
@@ -215,13 +218,16 @@ async function requestJson(
     (data as { ok?: unknown }).ok !== true ||
     !response.ok
   ) {
-    const errorBody = (data ?? {}) as { error?: unknown; message?: unknown };
+    const errorBody = (data ?? {}) as { error?: unknown; message?: unknown; refusal?: unknown };
     throw new BridgeCallError(
       typeof errorBody.error === "string" ? errorBody.error : "BRIDGE_BAD_RESPONSE",
       typeof errorBody.message === "string"
         ? errorBody.message
         : `${path} failed (HTTP ${response.status}).`,
       response.status,
+      null,
+      null,
+      refusalOfBody(errorBody.refusal),
     );
   }
   const body = data as Record<string, JsonValue>;
@@ -1912,6 +1918,16 @@ export function bridgeDo(options: ApiOptions = {}, clock?: (serverNowMs: number)
   return asking(options, clock, true);
 }
 
+/** Native corp.kickself mutation, held to the registry the confirmation belongs to. */
+export async function quitCorporation(characterID: number, corporationID: number, options: ApiOptions = {}): Promise<void> {
+  await bridgeDo(options)("corpRegistry", "KickOutMember", [characterID], null, corporationID);
+}
+
+/** Native corp.resignceo; a returned candidate choice resets its original operation's timer before retrying. */
+export async function resignCorporationCEO(newCEOID: number | null, corporationID: number, options: ApiOptions = {}): Promise<JsonValue> {
+  return bridgeDo(options)("corpRegistry", "ResignFromCEO", [newCEOID], null, corporationID);
+}
+
 function asking(options: ApiOptions, clock: ((serverNowMs: number) => void) | undefined, write: boolean): Ask {
   return async (service, method, args, kwargs = null, of) => {
     const notificationSink = options.captureNotificationSink?.();
@@ -3334,6 +3350,28 @@ export async function stopServerBot(botID: string, options: ApiOptions = {}): Pr
 // gateway/bridge call. A null value is a definitive "unknown" (an NPC/type not
 // in the static tables); the client name-cache caches it so it never refetches.
 
+/** A cfg.eveowners row: a missing row is distinct from a row with a None name. */
+export interface EveOwnerRecord {
+  readonly name: string | null;
+  readonly typeID: number;
+}
+
+/** Native Recordset callers: static NPC seeds, session rows/misses, and propagated failures. */
+export async function readEveOwners(ownerIDs: readonly number[], options: ApiOptions = {}): Promise<Readonly<Record<string, EveOwnerRecord | null>>> {
+  const data = await postJson("/api/names", { recordset: "eveowners", items: ownerIDs.map(id => ({ kind: "owner", id })) }, options);
+  if (!data.owners || typeof data.owners !== "object" || Array.isArray(data.owners)) throw new BridgeCallError("BRIDGE_BAD_RESPONSE", "Owner records are unreadable.", 502);
+  const rawOwners = data.owners as Readonly<Record<string, JsonValue>>;
+  const owners: Record<string, EveOwnerRecord | null> = {};
+  for (const id of ownerIDs) {
+    const value = rawOwners[String(id)];
+    const row = value && typeof value === "object" && !Array.isArray(value) ? value as Readonly<Record<string, JsonValue>> : null;
+    if (value === null) owners[id] = null;
+    else if (row && (typeof row.name === "string" || row.name === null) && typeof row.typeID === "number") owners[id] = { name: row.name, typeID: row.typeID };
+    else throw new BridgeCallError("BRIDGE_BAD_RESPONSE", "An owner record is unreadable.", 502);
+  }
+  return owners;
+}
+
 export interface ResolveNamesResult {
   /** Keyed by `${kind}:${id}`; value is the resolved name or null (unknown). */
   readonly names: Readonly<Record<string, string | null>>;
@@ -4702,6 +4740,13 @@ export async function importMultibuy(
   }
   const failedLines = Array.isArray(data.failedLines) ? (data.failedLines as JsonValue[]).map((line) => String(line)) : [];
   return { found, failedLines };
+}
+
+/** One forced portrait image read; a transport error is retried by the page's native image loop. */
+export async function readCapturePortrait(characterID: number, size: number, modifiedSince: number | null, options: ApiOptions = {}): Promise<{ readonly image: { readonly base64: string; readonly contentType: string } | null; readonly transportError: boolean; readonly notModified: boolean }> {
+  const data = await getJson(`/api/client-data/portrait-capture?characterID=${characterID}&size=${size}${modifiedSince === null ? "" : `&modifiedSince=${modifiedSince}`}`, options);
+  const image = data.image && typeof data.image === "object" && !Array.isArray(data.image) ? data.image as Readonly<Record<string, JsonValue>> : null;
+  return { image: image && typeof image.base64 === "string" && typeof image.contentType === "string" ? { base64: image.base64, contentType: image.contentType } : null, transportError: data.transportError === true, notModified: data.notModified === true };
 }
 
 /**

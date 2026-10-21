@@ -19,7 +19,8 @@
   import type { MapRouteStep } from "../app/flow.ts";
   import type { ContactStandings, NpcNpcStanding } from "../bridge/standingsReads.ts";
   import { applyStandingBonus, standingBonusSkill } from "../bridge/effectiveStanding.ts";
-  import { showInfo, showInfoTarget, subjectTypeID, type InfoSubject } from "./showInfo.ts";
+  import { showInfo, subjectTypeID, type InfoSubject } from "./showInfo.ts";
+  import { createSignal, type ReadableSignal } from "../store/signals.ts";
   import { LINK_WORDS, linkFollowerOf, startLinkDrag } from "./linkFollowers.ts";
   import { formatIsk } from "./isk.ts";
   import { clientTexture } from "./skillGroupIcons.ts";
@@ -36,7 +37,7 @@
     isCharacterOwner,
     isNpcCorporation,
     warPermitLabel,
-    type CorporationShowInfo,
+    type CorporationInfoRead,
   } from "../bridge/ownerInfo.ts";
   import type { AllianceInfoExtra } from "../bridge/allianceInfo.ts";
   import type { JsonValue } from "../bridge/wire.ts";
@@ -52,7 +53,18 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { AgentRow, SpaceEntity } from "../store/types.ts";
 
-  let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
+  let { store: pilotStore, flow: pilotFlow, subject: windowSubject, corporationResult: windowCorporationResult }: { store: ClientStore; flow: AppFlow; subject: ReadableSignal<InfoSubject | null>; corporationResult?: ReadableSignal<CorporationInfoRead | null | undefined> | null } = $props();
+  // A component belongs to one native window for its lifetime. Capture these
+  // handles so chrome/focus changes cannot become dependencies of its reads.
+  // The captured subject signal itself changes only on reconstruction.
+  // svelte-ignore state_referenced_locally
+  const store = pilotStore;
+  // svelte-ignore state_referenced_locally
+  const flow = pilotFlow;
+  // svelte-ignore state_referenced_locally
+  const subject = windowSubject;
+  // svelte-ignore state_referenced_locally
+  const corporationResult = windowCorporationResult ?? createSignal<CorporationInfoRead | null | undefined>(undefined);
 
   // svelte-ignore state_referenced_locally
   const space = store.space;
@@ -105,7 +117,6 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const skills = store.skills;
-  const subject = showInfoTarget.subject;
 
   const typeID = $derived(subjectTypeID($subject));
 
@@ -239,7 +250,7 @@
   // What the client's window reads of the owner, read again each time the subject changes (reconstruct_info_window
   // reads it on every opening). Nothing is shown of a record not had.
 
-  let corporationRead = $state<CorporationShowInfo | null>(null);
+  let corporationRead = $state<CorporationInfoRead | null>(null);
   /** A map place's read (infosvc.UpdateDataCelestial for a region, a constellation or a solar system). */
   let mapLocationRead = $state<MapLocationInfo | null>(null);
   /** A faction's read (infosvc.UpdateDataFaction). */
@@ -265,11 +276,6 @@
     if (current?.kind === "corporation") {
       // construct_header's faction (get_corporation_faction_id), from the client's table of NPC corporations.
       flow.loadCorporationFactions();
-      void flow.corporationShowInfo(current.corporationID).then((read) => {
-        if (ticket !== ownerReads) return;
-        corporationRead = read;
-        ownerReadDone = true;
-      });
     } else if (current?.kind === "alliance") {
       void flow.allianceShowInfo(current.allianceID).then((read) => {
         if (ticket !== ownerReads) return;
@@ -314,6 +320,13 @@
         ownerReadDone = true;
       });
     }
+  });
+
+  $effect(() => {
+    if ($subject?.kind !== "corporation") return;
+    const result = $corporationResult;
+    corporationRead = result ?? null;
+    ownerReadDone = result !== undefined;
   });
 
   onMount(() => {
@@ -935,7 +948,7 @@
   /** infosvc.UpdateDataCorp: the Attributes tab of a corporation. */
   const corporationRows = $derived.by<readonly OwnerRow[]>(() => {
     const read = corporationRead;
-    if (read === null) return [];
+    if (read === null || read.stage !== "complete") return [];
     const { info } = read;
     const npc = isNpcCorporation(info.corporationID);
     const rows: OwnerRow[] = [];
@@ -987,12 +1000,12 @@
       });
     }
     if (!npc) {
-      if (read.enlistmentFactions !== null) {
-        const factionNames = read.enlistmentFactions.map((id) => resolvedName($names.resolved, "faction", id, "Unknown faction")).sort();
+      if (read.enlistmentFactionNames !== null) {
+        const factionNames = read.enlistmentFactionNames;
         rows.push({
           key: "factions",
           label: word("UI/Corporations/CorpUIHome/PermittedFwFactions"),
-          text: factionNames.length > 0 ? factionNames.join("\n") : word("UI/Corporations/CorpUIHome/NoFwFactionsPermitted"),
+          text: factionNames.length > 0 ? factionNames.map(name => name ?? "").join("\n") : word("UI/Corporations/CorpUIHome/NoFwFactionsPermitted"),
         });
       }
       rows.push({ key: "war", label: word("UI/WarPermit/WarPermitStatus"), text: word(warPermitLabel(info.allowWar)), hint: plainText(word("UI/WarPermit/WarPermitExplanation")) });
@@ -1101,7 +1114,6 @@
       }
       if (corporation.allianceID !== null && corporation.allianceID > 0) refs.push({ kind: "alliance", id: corporation.allianceID });
       if (corporation.stationID !== null && corporation.stationID > 0) refs.push({ kind: "station", id: corporation.stationID });
-      for (const id of corporationRead?.enlistmentFactions ?? []) refs.push({ kind: "faction", id });
     }
     const alliance = allianceRead;
     if (alliance !== null) {
@@ -1137,6 +1149,8 @@
         return "Alliance";
       case "type":
         return "Item";
+      case "medal":
+        return "Medal";
       case "mapLocation":
         return mapTypeName(current.typeID);
       case "faction":
@@ -1549,10 +1563,10 @@
           {/each}
         </dl>
         {@render standingsTab()}
-      {:else if ownerReadDone}
+      {:else if ownerReadDone && $subject.kind === "alliance"}
         <!-- Said, not blanked: the server had no record to give. -->
-        <p class="note">The server gave no record of this {$subject.kind === "corporation" ? "corporation" : "alliance"}.</p>
-      {:else}
+        <p class="note">The server gave no record of this alliance.</p>
+      {:else if !ownerReadDone}
         <p class="note">Reading…</p>
       {/if}
     {:else}

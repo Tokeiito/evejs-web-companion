@@ -1574,6 +1574,57 @@ third participant. A real successful preflight held across a change of pilot ret
 or line. The native elevated mask includes Legion (262144); EveJS `5242286f7` fixes its omitted role,
 verified by an actual Legion-only session's denied RPC before and delivered invitation/join/reply after.
 
+Owner double-click (read 2026-10-19). `userentry.User.OnDblClick` (565-588),
+`chat/client/member_list_entry` (343-355) and `xmppchatuserentry2` (335-347) honor a
+custom node callback first. Ordinary rows read `settings.user.ui.dblClickUser`,
+default0: ShowInfo takes cfg.eveowners' actual typeID and ownerID; choice1 enters
+the chat Invite path above without the character menu's self/NPC gate. The chat
+service supplies the corresponding native refusals. `ConstructChatSettings`
+(systemmenu1197-1206) offers Show Info0/Start Conversation1; SettingsSvc keys the
+user section by userid, separately from character settings. Contacts and member
+tracking supply ordinary User entries. Search selects User for owner categories,
+but AgentEntry for agents. Its OnDblClick966-978 retains the agent conversation
+callback while docked and ignores this choice.
+
+The original compiled three owner methods confirmed both choices, actual owner
+type arguments, custom overrides and destroyed entries. The browser now shares
+the setting between one account's pilots, separately from other accounts, and
+uses it for contact/search/member/chat roster rows. Actual AppFlow and browser
+sessions verified these scopes, persistence, info versus chat dispatch and agent
+callback precedence. Native recorded traffic contained the expected private
+channel creations and elevated AddCharacterToChannel calls, with NPC DoAction
+separate. Recursive corpus searches found no dblClickUser or CreatePrivateChannel
+capture; unrelated space-double-click telemetry is not evidence of this gesture.
+
+Explicit owner Show Info (read2026-10-19). User.ShowInfo549-552 and menusvc579-580
+use cfg.eveowners' actual type; GetMenuFromItemIDTypeID2281-2297 offers it for
+corporation/alliance/faction owners too. Their shared Contacts menu now does so,
+independently of the configured double-click action. Missing local ownerType
+resolution for NPC/faction rows is fixed: LoadEveOwners548-584 preloads faction30,
+NPC corporation2 and NPC character1373. Known rows use local tables; player types
+retain the native GetMultiOwnersEx read. Original compiled User.ShowInfo, actual
+AppFlow types and desktop/phone typed corporation/faction windows verified this.
+Recorded owner-type reads contain player owners only, no NPC/faction lookup and
+no private-chat creation. The compiled ShowInfo window selection policy and the
+window-manager port and remaining asynchronous reconstruction unit are recorded in
+[game-port-info-windows.md](game-port-info-windows.md).
+
+Independent info windows (c6b1,2026-10-19). Original compiled ShowInfo412-454,
+its bucket/registration helpers, HistoryBuffer and InfoWindow.NavigateHistory
+confirm newest-created reuse, duplicate modern no-op, legacy reconstruction,
+new/addNewWindow/Shift/user preference, modal decisions and history routing.
+Original idCheckers and installed type/group data determine ship/ordinary and
+character/corporation/legacy content; generic type0 has group0 and is valid.
+The browser now keeps per-pilot windows, components, history and geometry, with
+desktop focus and phone instance selectors. It snapshots asynchronous owner
+gestures and dispatches every synchronous multi-owner request. Captured stable
+component handles prevent focus/layout changes from rereading info. Live native
+counts were unchanged through minimize/restore, desktop/phone changes and pilot
+switching. Actual native account replacement cleared the old pilot's windows.
+The old global-target and contextual-tab assertions were retired, not skipped.
+Native loading guards, thread cancellation and ship pendingLoadData behavior
+remain required c6b2 work; the window manager does not claim those complete.
+
 Before a character is chosen. The cfg, as its data are loaded, asks `config.GetBlackListedPlanets()`
 (`eve/common/script/sys/eveCfg.py` 367, 475 to 477) and, by a thread, `config.GetOldStationData()` (701, 741 to
 753). The AIR tutorial's controller asks `air_npe.is_air_npe_enabled()` at each coming of the global config
@@ -1999,6 +2050,166 @@ after an injected server refusal, and published no local event for a real reply 
 The replacement session read the server's persisted write. No exact TQ write/error/fanout recording was found;
 this does not establish Python dict tombstone order across deletions or incoming personal-notice parity.
 
+Corporation and alliance labels preserve no color (`None`) independently of explicit white (`0`).
+Original compiled `addressbookService.CreateContactLabel` 1015-1020 and `GetLabelText` 1189-1202,
+executed through the installed Python 2.7 DLL, keep None and render plain label text; explicit 0
+adds a white color tag (`mailSvc.py` 31). EveJS previously changed a newly created uncolored label
+to 0 on the next session's `GetLabels`; server fix `76299b459` preserves null in both organization
+registries. Native game-port writes, rename, fresh sessions and a full server restart retain
+None alongside explicit 0/2, assigned label masks and standing 2.5. Captured replies show None in
+corporate CIndexedRowset packed rows and alliance KeyVals. The unmodified Corporation Contacts
+and Alliance Contacts panels display those actual persisted labels; orange is colored, while
+the existing browser swatch policy renders white and uncolored labels in its own text color.
+The recursive TQ corpus has an empty corporate `GetLabels` reply but no matching label-write
+recording, so this establishes compiled-client behavior and local wire parity, not a TQ write
+default. CCP `blue/src/PyRowSet.cpp` 1151-1180 supports None in numeric DBRow columns.
+
+Contact label IDs must fit the native signed mask: positive powers of two through bit 62.
+The original `appConst.pyc` defines `maxLong = 9223372036854775807`; executing compiled
+`addressbookService.DeleteContactLabel` 1072-1089 in all three scopes clears bit 62 but
+leaves bit 63 assigned. CCP `blue/src/PyRowSet.cpp` 1208-1213 uses signed `PyLong_AsLongLong`
+for the corporate label ID's DBTYPE_I8 column. Ordinary EveJS create/delete cycles previously
+advanced a historical allocation hint to bit 63 and failed to marshal the reply after persisting
+the label. Server fix `79e033278` reuses a free valid bit when the hint exhausts the range and
+refuses a full 63-label book with the installed `LabelCantCreateMore` dialog. TQ allocation order
+and the exact capacity refusal are not recorded; choosing the free bit is an emulator policy.
+Live native calls covered 70 create/delete cycles per scope, full books, refusal without mutation,
+bit-62 reuse after deletion, retained bit 60 and a full server restart. The page now sends a label
+creation UserError through its ordinary client-dialog handler, matching compiled
+`eve_exception_handler.handle_exception` 34-38. Refused creation adds no label and retires no
+held label table. The browser shows the installed capacity wording and can create again after
+deleting a staged label. These checks used actual server replies without a response hook.
+
+Corporation > Members > Decorations now has its catalogue view (`corp_ui_member_decorations`
+55-87): `corporationSvc.GetAllCorpMedals(corpID)`, then each creator's owner name, with title,
+creator, `FmtDate(date, 'ss')`, the catalogue's blank reason column and `noRecepients` count.
+Descriptions are row hints. The recursive TQ search finds the admin-panel capture at 1242-1249:
+one-hour CachedMethodCallResult, CachedObject/GetCachableObject, then a Python list containing
+two empty CRowsets. EveJS `a71777f32` now matches that recorded container and both typed descriptors;
+the previous result was a tuple of generic rowsets and omitted graphics `layer`. Catalogue
+title/description are WSTR, the date is FILETIME, and graphics preserve signed I4 color bits.
+Populated layer values are unrecorded; preserving an explicit stored layer or using input ordinal
+within each medal/part is an emulator policy. Other medal endpoint shapes remain unchanged.
+
+The shared page decoder reads both CRowsets and legacy generic rows, including Unicode wrappers;
+the existing member-menu Award Decoration selector uses it too. Native creation notices already
+invalidate the BFF's object cache (`medals.OnCorporationMedalAdded` 122-132); the page now reloads
+an initialized catalogue on that notice, including while hidden. Returning to it uses the held
+native cache. Live empty payloads exactly matched the decoded TQ value. Native writes and the
+browser verified Unicode titles/hints, dates, count 3, signed ARGB and graphics order, visible
+and hidden notice refresh, and the existing award-selection list without a write on Cancel.
+An ordinary member read all three decorations after a full server restart, with no award action.
+Expanding a medal now builds its preview locally from those held graphics and adds the native
+ViewAwardees group (`GetDecorationSubContent`90-110, `infosvc.GetMedalEntry`529-561).
+Opening the second group calls `corporationSvc.GetRecipientsOfMedal(medalID)`; repeated
+`recepientID` rows are grouped in Python integer-dict order, retaining the first issuer, date
+and reason and counting every award (`GetMedalSubContent`112-149). Names are resolved recipient
+then issuer in that order. The recipient's Show Info action opens the character window.
+The live ordinary-member browser showed two and one awards, accented text, an empty recipient
+group and a fresh read on reopening. Wire capture shows no recipient call for the preview,
+one per recipient-group opening, and no award write from the observer. Data survives a full
+EveJS restart. No new recipient wire-shape claim is made against TQ: the recursive corpus
+search contains no such reply. The current server rows satisfy the compiled consumer.
+List sorting preferences and the creation window remain separate units.
+
+The installed medal atlases use uncompressed BGRA32 DDS. `/client-res/ui/texture/…dds`
+now converts that indexed format to RGBA PNG while retaining the existing PNG route.
+The masks and DDS header layout agree with CCP `trinityal/tests/WithValidRenderContextFixture.cpp`
+60-87,111-132. Live Amarr ribbon and Compass medal output matched an independent DDS
+decoder in every RGBA pixel and loaded in the browser at 256×256. Other DDS formats
+(including DXT5) remain unsupported. The browser preview crops the native 128px quadrants,
+preserves input order (ignoring the catalogue's layer field), and uses the native half-size
+parts and truncated 20/128 overlap. Original compiled MapLogo/MedalRibbon.Startup/LoadData
+execution confirms the mapping, sizes and untinted -1 sentinel. Signed ARGB channels follow
+CCP TriColor.PyFromInt302-316 and carbonui.util.color.HextoiRGBA256-275; the SVG tint uses sRGB
+channel multiplication. CCP Tr2Sprite2dContainer.cpp312-318 gathers children in reverse order,
+so the first graphic is drawn on top. This is a minimal browser rendering; exact GPU sampling,
+color-space settings and pixel equality with a full retail UI have not been measured.
+
+The medal entry's Show Info passes type29496, medalID and held graphics, as
+`MedalRibbonEntry.ShowInfo`869-872. Original compiled `InfoWindowMonolith` methods
+read `GetMedalDetails(medalID).info[0]` twice: first title/description1450-1453,
+then ownerID/numberOfRecipients675-687. The issuer header builds its logo, then
+looks up a player corporation's ticker and owner name in that order. The icon uses
+the supplied abstract graphics at render size256 in a 128×256 frame1347-1352.
+The page preserves that sequence and ordinary window history/reuse. Live browser
+verification showed accented text, correct large icon, count3/count0, issuer logo
+navigation and history back to the medal. Wire capture has two details calls for
+each reconstruction and none for minimize/restore. The original browser check
+established field availability, but a later native encoding check found a server
+defect: details title/description and recipient/received reasons were UTF-8 PyString.
+Installed `eveprefs`7,205-206 sets CP1252; original compiled
+`LabelCore._Layout`669 -> `stringManip.GetAsUnicode`39-44 therefore corrupts those
+bytes. EveJS now explicitly returns PyUnicode for these persisted user texts.
+Actual before/after replies run through the original compiled label and recipient
+consumers show mojibake before and preserved accented text after (cdx2531).
+
+Received-medal rows also need title/description: `charSheetUtil.GetMedalScrollEntries`
+29-57 passes them directly to compiled `infosvc.GetMedalEntry`529-561, which reads
+both without a details lookup. EveJS appends the missing Unicode fields after
+its original seven columns. The actual old row raises AttributeError in that
+original consumer; the fixed row constructs the entry and held graphics.
+This establishes required named fields, not an exact TQ received-row descriptor.
+There is no GetMedalDetails reply in the recursive TQ corpus search, so its exact
+TQ container/descriptor/cache policy remains unverified.
+
+Decorations uses ordinary `Scroll` with sortGroups/reverseGroupSortEnabled false
+(`corp_ui_member_decorations.Load`39-49). Compiled `Scroll.SortAsRoot`914-951 keeps
+medal groups in server order, places nested groups before preview entries, and
+sorts recipient rows by the selected column key then the lowercase full label.
+`_GetSortValue`721-758 strips only `font.DeTag`'s color/alignment tags, attempts
+the native numeric/unit conversion, otherwise appends the remaining columns
+without lowercasing them. Python 2 numeric keys precede text. Descending reverses
+the completed list, including ties. The page follows this order and saves
+`scrollsortby_3[corp_decorations_scroll] = [localizedHeader, reversed]` in the
+account's user settings (`GetSortBy`674-689, `ChangeSortBy`966-992). A new column
+starts ascending; clicking the current column flips direction. An unavailable
+saved header falls back to the first header (`__LoadHeaders`1106-1125).
+An empty opened recipient group shows the native NoItem label
+(`PrepareSubContent`1314-1339). Live counts2/10, numeric/text reasons, group order
+and preference survival across a full page reload were verified.
+
+Every Decorations column, including the last, can resize. `Scroll`452-472 saves
+`columnWidths_3[corp_decorations_scroll][localizedHeader]` in user settings and
+clamps manual widths to24; an unmoved handle saves nothing. Double-clicking a
+header or its handle fits the loaded column and saves the result
+(`ResetColumnWidth`1133-1177, `ColumnHeader`353/158). Automatic measurement considers
+headers and loaded tabbed rows, their indentation and two8px margins; native
+`font.MeasureTabstops`306-343 starts at32. The browser measures its rendered font
+and controls, so these are behavior/measurement-boundary matches rather than
+native glyph-pixel equality. Saved widths remain fixed as groups load/collapse;
+unsaved widths fit the current loaded text. Header click dispatch follows compiled
+`uilib._TryExecuteClickHandler`957-981: first click sorts, second fits, with no
+second sort toggle. This ordinary scroll has no column hide/reorder menu.
+
+Group-open state belongs to the character's `listgroups`, rather than the user
+section used for widths and sorting. Compiled `registry.Get/SetListGroupOpenState`
+553-575 stores `listgroups[listID][str(medalID)].open`. The native identities are
+`corpdecorations` for the medal and `corpdecorationdetails` for recipients
+(`corp_ui_member_decorations`69-108). Compiled `ListGroup.Toggle`935-960 persists
+the toggled group before reconstructing subcontent; closing a parent preserves
+its child's preference. `Scroll.AddNode/PrepareSubContent`1300-1339 reconstructs
+saved-open groups in catalogue order, including recipient reads for saved-open
+children. A closed parent or child suppresses that read. The page keeps these
+identities and character scope, reconstructs remembered groups after catalogue
+loads, and re-reads a remembered-open recipient group when reopening its parent.
+
+Creation is being built in three parts: the native medals service operation,
+the layer designer, then window submission/wallet selection. The service operation
+is `medals.CreateMedal`31-53: Director OR Personnel Manager, name length at most100,
+description length at most1000, then top-level `corporationSvc.CreateMedal` with
+three arguments. Title/description are Unicode, graphics are nested Python lists
+from `MedalRibbonPickerWindow.SubmitData`553-560. Only an exact
+`ConfirmCreatingMedal` refusal prompts with formatted bold cost and Yes suppression;
+only Yes retries with fourth True. No returns normally, so the future window
+still closes; role/length/other refusals keep it open. The flow's boolean reports
+normal completion versus a displayed refusal, rather than a newly allocated ID.
+Original compiled execution confirms these branches. No creation/confirmation
+reply was found in the recursive TQ search; neither a mandatory confirmation nor
+a fee amount is established. The current EveJS success path returns immediately.
+The designer and wallet checks remain separate work; this service operation does
+not add the window's missing-field or wallet checks to the service.
+
 Member Details' Give Shares follows compiled `corp_dlg_edit_member.OnGiveShares`, `uix.QtyPopup` and
 `bco_shares.MoveCompanyShares`: an integer quantity from 1 to 2147483647, initially 1 and selected, then
 `corpRegistry.MoveCompanyShares(session.corpid, targetCharID, quantity)` on the corporation moniker. The button
@@ -2027,6 +2238,235 @@ Share-creation activation now sends the corporate holder's `OnShareChange` after
 an already applied activation changes neither issued shares nor the holding and sends no duplicate notice.
 The live corporate view was verified on both an existing holding and an exhausted holding recreated by a vote.
 The Tranquility corpus contains no activation recording, so its exact errors, notice order and selector remain open.
+
+### Direct station trade: source audit and implementation slices
+
+The receiver-side Tranquility recording `Archive/In station trade.txt` is the primary packet
+reference. Lines41-48 show `OnTradeInitiate(initiatorCharID, Moniker)` with `idtype="charid"`.
+The moniker state is `(trademgr, nodeID, (dockedLocationID, solarSystemID, traders, clientIDs), None)`.
+Its first call is carried by `MachoBindObject(params, ('List', (), {}))`. The inline answer is a
+`carbon.common.script.sys.row.Row` with headers `tradeContainerID, traders, state, money, items`:
+the traders are a tuple, state and money are lists, and items is a Python set. The empty state is
+`[None, None]`, not numeric flags. Repeated List reads are visible during window construction.
+
+Original compiled `pvptradesvc.StartTradeSession` calls `InitiateTrade(charID)` and then List
+twice on the path that opens a new window: once in `_ShowTradeSessionWindow`, once in
+`OnTradeInitiate`. An incoming invitation starts at the latter and reads List once before
+opening. `PVPTrade.ApplyAttributes` reads again, as do its two inventory controllers through
+`invControllers.PlayerTrade._GetItems`. Reuse the same moniker; do not repeat InitiateTrade
+to refresh the window. `CharacterChecker.OfferTradeWithCharacter281-290` requires one other
+non-NPC character who is a guest of the current station or structure (`IsGuest403-408`).
+
+`pvptradewnd.Cancel80-89` asks `ConfirmCancelTrade({}, OKCANCEL)`; refusal sends nothing and
+confirmation clears the window's session reference before Abort. `_OnClose67-78` otherwise
+attempts Abort, including after completion. The recorded completion path returns True from
+MakeOffer and the close-time Abort. Accept constructs a KeyVal manifest containing the container,
+both money offers and the union of both item sets; `OnTradeOffer` carries manifests/None, not
+boolean state flags. OfferMoney and cancellation are client-code-backed but not exercised by
+this successful item-only recording. Ship warnings, item restrictions, offer resets and completion
+notifications must be ported with the exchange controls, before exposing a usable trade action.
+
+The installed Python27 oracle executed the original compiled menu, outgoing/incoming controller
+and Cancel methods (loop evidence cdx2924, with UI/RPC boundaries recorded). A cold live native
+two-account probe cdx2923/cdx2931 verified the existing server's returned/received monikers,
+carried List and subsequent bound List row shapes, True Abort and bilateral OnTradeCancel.
+The probe used Two/test2 and Pilot1/test in Jita; it did not stage items or complete a trade.
+The full store baseline was restored byte for byte afterward. Later slices below add the browser UI.
+
+The same recording's lines386/388 prove corporate source inventory: a staged item changes from
+owner98826653/location1052880078604/flag115 to the offering pilot's trade row. Server commit
+`f17205f03` replaces the old personal-only gate for direct rows in the acting corporation's local,
+non-impounded office division, using existing Hangar Take permissions. Staged ownership becomes
+the offering pilot's; saved original custody remains available for cancellation. Native cold
+before/after probes verified the authorized refusal before, then staging, exact abort restoration,
+re-staging and bilateral manifest completion to the recipient afterward. Another corporation and
+a division without Take remain refused. Nested corporate source containers remain unsupported.
+
+Commit `16649b126` also sends the partial source stack's quantity debit to the acting pilot.
+Native `invCache.OnItemsChanged219-307` and its container's `_ProcessItemChange1327-1430` consume
+that row to update cached office inventory. A measured split of quantity2 into1 previously sent
+only the new trade row; the corrected call also sends the remaining office row quantity1 with
+old quantity2 to the source pilot. The counterparty receives the trade row. Server ledger
+`f6f383aca` records those real packet probes, full fixture restoration and remaining limits;
+interrupted-stage recovery, lockdown and impound cases were not exercised live.
+
+Implementation order: carry returned and notified trade
+monikers through the browser transport; port inventory/money/manifests and cancel/complete
+controllers; then wire the guest-gated member menus and verify both pilots in the browser.
+The generic returned-bound-object helper recognizes remote substructs. Direct Trade now has an
+explicit transport path for its returned/notified Moniker: the BFF retains its actual node and
+parameters and gives the browser a pilot-scoped carriage reference for that received object.
+The reference is additional browser/BFF metadata and never goes to EveJS. List and Abort bind that
+same retained object lazily; Trade is absent from the location-derived `MONIKER_SERVICES` table.
+Consecutive trades can reuse identical parameters, so parameter equality cannot identify a trade
+object. Cold production AppFlow evidence cdx2980 verified two rounds with identical params and
+distinct containers/references, repeated List on each source object, receiver List and cancellation.
+Actual wire2987 contains four carried List binds, two subsequent List calls, two InitiateTrade and
+two Abort calls, no trade address-resolution request and no unmatched replies. A reference received
+by the other pilot is refused before native dispatch.
+
+The exchange bridge now sends single Add with `qty` and `flag=None`, and MultiAdd with the
+Python list of IDs sorted by type volume times stacksize and `flag=0`, as the original compiled
+inventory methods confirmed in cdx2995. OfferMoney carries a float even at zero; MakeOffer carries
+the native KeyVal with money list and Python set of both sides' packed rows. Production AppFlow
+cdx3003 staged a partial stack then two remaining stacks, offered0.25/0.50, read the manifest/None
+state, accepted both manifests and received completion for both pilots. Wallets changed by the
+expected net0.25 and close Abort remained valid. Decoded wire3007 confirms the argument kinds;
+actual zero-money call3008 uses PyZeroReal0x0b. The TQ offer packet itself is LARGE PAYLOAD; the
+client's decoded scatter at968 exposes its manifest fields, not exact packet bytes. No TQ money
+offer was found.
+
+The browser now owns each exchange in `app/directTrades.ts`, keyed by container and received
+moniker. It opens the native-sized window for incoming trades even when that pilot is inactive.
+The two native inventory requests share one List result (TQ220-226); actual cold browser capture
+cdx3043 shows four opening List calls for the source and three for the recipient, without polling.
+Money, manifests, item rows and closure follow the native notifications. Cancel asks the installed
+ConfirmCancelTrade question and clears its close-time reference before Abort; OnTradeCancel
+closes without another call. Completion closes with Abort. Both flows were observed in the browser:
+a .25/.50 ISK exchange completed with a net .25 transfer, then a new exchange canceled after first
+declining the confirmation. The actual wire contains two close-time Aborts for completion and one
+for cancellation, all True. Self and non-guest member menus omit Trade; a present guest gets it.
+
+Offer Money uses the current offer as minimum, wallet wealth as maximum, initial100 and digits2.
+The native float field trims excess decimals (original compiled SingleLineEditFloat29-41).
+Displayed offers use eveformat.isk's default zero decimals, while the manifest retains fractions;
+QtyPopup's hint uses FmtAmt's grouped whole bounds. Original compiled currency13-18 and FmtAmt
+confirm these separate display rules. The browser's first screenshot caught a clipped money label;
+its corrected 64px header and whole-ISK labels were then checked visually (cdx3045).
+
+Inventory stacks now drop through the same received trade moniker. Retained List rows supply
+their actual source location; selected stacks use native type volume times quantity for MultiAdd,
+with flag0, while a single Add uses flagNone. PlayerTrade1672-1687's active-ship, asset-safety-wrap
+and static typelist gates run before those writes. The installed typeListLoader.pyd's lists36/142
+match every inclusion/exclusion array in the same-build CCP data used by the app. Ship-hangar
+rows now provide the existing inventory drag payload too. Native Shift quantity rules are ported,
+but a physical Shift-drag has not yet been proven with the available input API.
+
+Cold browser capture3069 proves local injector/wrap/active-ship refusals with no Add, two
+volume-ordered MultiAdds, three single Adds, nonempty offers and acceptance reset after adding.
+Declining the recipient's TradeShipWarning sends no MakeOffer; accepting it completes the Rifter,
+three Acolytes and one Hobgoblin. Browser hangars and stopped custody read3082 agree on delivery.
+Cancellation restores the drone stacks, including a subsequent reverse-direction trade. The
+ordinary Member List's Trade entry is also verified. A drop on the other-party header routes to
+the offering pilot's controller. Cold capture3099 also verifies a drop wholly inside the other
+party's blank lower inventory: Add(item, Jita, qty3, flagNone) returns True, and both windows show
+the offering pilot's three Acolytes. Cancel returns them to the source hangar. Temporary event
+tracing3094 showed the earlier failed automated gestures ended on a newly entered element
+without a final dragover or drop event; the successful gesture emitted both on the inventory
+div. No application hit-area change was needed, and the diagnostic logging was removed.
+
+Native GetItemLabel251-264 uses type names for ordinary drones and combines type/item names for
+named hulls. The first nonempty browser check exposed an incorrect location-name preference;
+it is corrected using IsValidNamedItem's existing ship/group predicate and TypeNameAndItemName.
+Original compiled3070 confirms an ordinary drone makes no location-name lookup and a named ship
+uses the combined label. Deploy-component naming remains beyond that existing predicate.
+
+Personal ordinary containers directly in the current hangar or active cargo are now valid Trade
+sources. Original compiled invCache.AcceptPossibleRemovalTax754-780 and GetCachedItem confirm
+these parent chains require no price RPC. Cold capture3124 offers the actual container IDs as
+sources, restores exact contents on Abort, then completes delivery of Acolyte3/Hobgoblin2 while
+leaving both containers with their original owner/location/flag. The browser's open-container
+view now follows item notices through the existing native inventory cache; it clears on offering
+and refills on cancellation. Stopped custody3125 agrees with the recipient's hangar screenshot3118.
+That capture did not exercise deeper/corporate ancestry or charged asset-safety recovery.
+The later recovery, corporation and nested-container cases are recorded separately in the loop journal.
+
+Single active fitted-source drags now follow the original compiled AddItems489-525 and
+DogmaLocation1077-1134 (web `f85b40b0`, server `2eedd415b`). A loaded slot supplies its charge;
+that path lists the source flag and sends UnloadAmmo(ship,module,(tradeID,actor,None),None).
+A module binds/reads the destination self item, sends scalar UnloadAmmo and then inventory Add
+without qty or flag, after any bank confirmation/breakup. Cold browser capture3469 offers
+EMP20, both original guns and shield377, including a drop on the peer half. Abort restores the
+loaded charge and original gun slot automatically; a new completed trade retains all four
+original IDs in the recipient's personal Jita hangar across cold restart3481. The native charge
+tuple previously failed the server's scalar-only preflight. No exact fitted-Trade TQ capture
+or launched retail UI is claimed; multiple fitted selection is a distinct native producer.
+
+Original compiled PlayerTrade.AddItems and BaseInvContainer._AddItem/__AddItem/
+PromptUserForQuantity193-327 confirm the ordinary single-stack quantity branch: Shift asks
+QtyPopup(max,0,max,NoMoreUnits), Cancel or zero sends no Add, and a stack of one bypasses the
+popup. The browser's production dialog and native partial offer were checked cold with an
+explicit DOM drop shiftKey boundary using the actual captured inventory drag payload: Cancel
+and zero retain an empty Trade, choosing3 from50 leaves47 at source and offers3, and Pyerite1
+offers without a question. Actual browser buttons accept the dialog and completed trade;
+native custody reads confirm the source remainder and recipient split. This checks the
+production handler, dialog and RPC, not a physical Shift gesture: the available drag input
+reset the modifier, as retained event observations show. Physical Shift remains unverified.
+
+Ordinary numeric multi-item Inventory moves now pass through the cached inventory wrapper
+(original invCache1027-1063): active-hull refusal before locking, destination-self and persistent
+lock skips, per-flow local move locks, a NEW acquired-minus-empty-charges set, then finally
+unlock in the acquired set's traversal order. ItemLocking30-34/57-79 supplies a cached dictionary
+for the current station/structure, invalidated by native OnLockedItemChange. Dictionary long
+keys stay exact decimal strings; moved IDs are limited to safe integers. Single Add and other
+inventory writers do not yet share this local broker; fitted/tuple producers remain separate.
+Direct PlayerTrade1691 returns its session moniker and retains the controller's volume order.
+
+Cold browser capture3568 moves eight original mineral stacks to cargo and back. The controller's
+volume order9187..9180 becomes native set order9180..9187, with one station lock-dictionary read
+across both moves. Original compiled MultiAdd/ItemLocking reproduces both actual wire calls
+(agent4); fifteen installed-runtime order cases also match, including collisions and safe
+near-2^53 IDs. All117 calls succeed without decoding errors. Native custody read3573 and cold
+restart3579 agree exactly on original IDs/quantities, empty cargo and unchanged cash; no mutation
+replay. That first fixture has an empty lock dictionary. Populated capture3595 subsequently
+checks a mixed corporation blueprint selection: only the unlocked ID reaches MultiAdd. An
+actual peer unlock notice causes a fresh empty dictionary read on the same page, then both
+remaining blueprints move. Relocking invalidates the cache again; an all-locked selection
+reads two keys and sends no move RPC. Original compiled consumers reproduce all four actual
+MultiAdd lists and three browser cache invalidations (agent5). The outcome now states how many
+items stayed at source, or "No items moved", without attributing a local skip to the server.
+All276 calls succeed; cold restart3611 preserves both corporate locked originals and the
+personal cargo original, with unchanged cash and no replay. Full staged baseline is restored.
+Ordinary single Add now shares the broker with MultiAdd; other numeric inventory writers
+remain follow-up work.
+The prerequisite container metadata cache now keeps the actual backing self row separately
+from listed contents and from a public own-item notice override. Original compiled
+`invCache` constructor913-936, properties942-975 and List/ListByFlags1131-1205 show why:
+a cold station hangar lists first, then lazily fetches its itemID/typeID; a numeric inventory
+already has its ID, so listing it needs no self RPC. Canonical backing `GetSelfInvItem()`
+reads reuse that reply until the container is dropped. A public own-item notice does not
+prime a cold backing type. Owner/group consumers prefer the public notice, then backing
+self, then an already-listed row (OnItemChange295-300, GetCorpKeys645-657).
+Actual production transport3628 verifies both empty listing forms, one self read per
+container lifetime, numeric listing without self, and fresh metadata after reselection.
+Closed wire3630 has252 successful calls including100 from the real browser; its empty item
+hangar and populated Badger cargo render normally. Lifecycle3634 verifies incoming corporate
+contents without a parent listing or relist, ownership notices, and real role resignation:
+the now-personal container stays held while the still-corporate container is rebound and
+receives the server's access refusal. The raw metadata route represents backing
+`_SetItemData`, not every native public `GetItem(force)` behavior or a capacity cache.
+
+**Ordinary single Add and shared locks.** Original compiled `invCache.Add998-1025` rejects
+the active hull first, evaluates the destination ID, returns None for explicit zero quantity,
+checks persistent locks before self-placement, then evaluates the destination type before
+acquiring `lockAddItemToContainer`. A contender uses the holder's reason and values. The
+default MultiAdd holder produces `ItemIsLocked` with the client's already-formatted held date
+and `NoReasonWasSpecified` text; a named Add holder carries only its actual `containerType`.
+Installed native localization and the existing web formatter agree (agent4). Add preserves
+the remote result; both paths release by ID, including on an early valid item notice, with
+no acquisition token. Same-pilot invalidation replaces the broker's current map; an old
+finally still operates on that current map (agent5). Whole-pilot retirement stays isolated.
+The structure hangar alias seeds its numeric ID, avoiding a station-only metadata lookup.
+
+Cold browser42 refuses the locked blueprint locally, then moves original Tritanium50 to
+cargo and back (3659/3661). StationPanel disables overlapping UI actions; the held HTTP
+request3660 proves no browser contention. Production flow3663/3664, with deliberate request
+gates and real replies, verifies Add-held MultiAdd skips and both contention payloads.
+The production helper/API then forwards actual item notices before a gated first completion;
+the same original Nocxium30 moves back before that first operation returns, and both Add
+results retain their numeric ID. Closed3667 has218 successful calls,29 notices and no
+unmatched/decode errors. Cold3670 preserves all eight exact stacks, empty cargo, all three
+corporate blueprints, the original persistent lock and unchanged balance without replay.
+Trace diagnostics, tuple/fitted producers, natural scheduler timing, other numeric writers
+and universal public GetItem/capacity semantics are outside this ordinary move slice.
+The prerequisite server fix ee5ac2acc sends the subscribed four-argument lock-change event;
+actual lock/unlock notices pass original compiled cache handlers (agent3). Notification audience
+and lane are not established by a Tranquility lock-change capture.
+
+The remaining ancestry/removal-tax paths, inventory view controls, item menus/tooltips,
+splitter persistence and additional character-menu placements remain follow-up work.
+Corporate and active-ship-bay source coverage is recorded
+per case in the ignored loop journal; the older drop verification above covers its own fixture.
 
 `src/gamePort/bridgeJson.js` maps what the game port decodes to onto the JSON the web gateway
 emits, which is what the browser's decoders were written against. How well that holds, read by

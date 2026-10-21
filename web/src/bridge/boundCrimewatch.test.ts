@@ -66,11 +66,13 @@ test("decodeClientStates reads Farmer's clean live state (idle timers, no flags,
     ],
   );
   assert.deepEqual(states.criminals.members, []);
+  // crimewatchSvc.ProcessSessionChange96-104: tuple[1] is myEngagements, empty for this pilot.
+  assert.deepEqual(states.engagements, []);
   assert.deepEqual(states.suspects.members, []);
   assert.equal(states.safetyLevel, 2);
 });
 
-test("decodeClientStates decodes an ACTIVE timer's FILETIME as an EXACT string (R7d)", () => {
+test("decodeClientStates preserves timer and native engagement FILETIMEs and ongoing sentinel", () => {
   // Server buildTimerTuple: an active timer is [code+2, buildFiletimeFromExpiryMs]
   // — a {type:long} FILETIME that exceeds 2^53 and must survive as an exact string.
   const bigFiletime = "133700000000000007"; // > 2^53 and NOT float-representable
@@ -79,7 +81,8 @@ test("decodeClientStates decodes an ACTIVE timer's FILETIME as an EXACT string (
       [102, { type: "long", value: bigFiletime }],
       [200, null],
     ],
-    { type: "dict", entries: [] },
+    // crimewatchSvc96-104,263-288 and crimewatch.const: other ID -> exact timeout or ongoing -1.
+    { type: "dict", entries: [[140000003, { type: "long", value: bigFiletime }], [140000002, -1]] },
     [pythonSet([]), pythonSet([])],
     1,
   ]);
@@ -88,6 +91,7 @@ test("decodeClientStates decodes an ACTIVE timer's FILETIME as an EXACT string (
     { state: 200, expiry: null },
   ]);
   assert.equal(states.safetyLevel, 1);
+  assert.deepEqual(states.engagements, [{ characterID: 140000003, expiry: bigFiletime }, { characterID: 140000002, expiry: "-1" }]);
 });
 
 test("decodeClientStates keeps flagged-set charIDs as data, big ids as exact strings (R7d)", () => {

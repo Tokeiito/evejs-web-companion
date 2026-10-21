@@ -65,6 +65,13 @@
   import { onMount, untrack } from "svelte";
   import OwnerFleetMenu from "./OwnerFleetMenu.svelte";
   import OwnerChatMenu from "./OwnerChatMenu.svelte";
+  import OwnerMemberMenu from "./OwnerMemberMenu.svelte";
+  import OwnerQuitMenu from "./OwnerQuitMenu.svelte";
+  import OwnerExpelMenu from "./OwnerExpelMenu.svelte";
+  import OwnerCEOMenu from "./OwnerCEOMenu.svelte";
+  import OwnerDecorationMenu from "./OwnerDecorationMenu.svelte";
+  import OwnerCorporationInviteMenu from "./OwnerCorporationInviteMenu.svelte";
+  import OwnerCorporationCashMenu from "./OwnerCorporationCashMenu.svelte";
   import { formatTemplate, plainText, type TemplateArguments } from "../bridge/clientWords.ts";
   import { shownSecurity } from "../bridge/systemSecurity.ts";
   import { FLEET_ROLE as MENU_ROLE, memberMenu, rankLabel, type MemberMenuEntry, type MemberMenuPlace, type MemberMenuSquad, type MemberMenuWing } from "../bridge/fleetMemberMenu.ts";
@@ -93,9 +100,10 @@
   import type { AppFlow } from "../app/flow.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import { showInfo } from "./showInfo.ts";
+  import { doubleClickOwner } from "./ownerDoubleClick.ts";
+  import { showOwnerInfo } from "./ownerInfo.ts";
   import { focusMail } from "./mailFocus.ts";
   import { notify } from "./notices.ts";
-  import { TRANSFER_REASON_MAX, transferAmount, transferReason } from "../bridge/giveMoney.ts";
   import { isFleetCommander } from "../bridge/fleetCommand.ts";
   import type { BookmarkPlace } from "../bridge/locationsList.ts";
   import BookmarkWindow from "./BookmarkWindow.svelte";
@@ -187,12 +195,6 @@
     inviteToFleet: "UI/Fleet/InvitePilotToFleet",
     squadMember: "UI/Fleet/Ranks/SquadMember",
     formFleetWith: "UI/Fleet/FormFleetWith",
-    transferMoney: "UI/Wallet/WalletWindow/TransferMoney",
-    fromCharacter: "UI/Wallet/WalletWindow/FromCharacter",
-    toCharacter: "UI/Wallet/WalletWindow/ToCharacter",
-    amount: "UI/Wallet/WalletWindow/ColHeaderAmount",
-    reason: "UI/Wallet/WalletWindow/Reason",
-    transferSuccessful: "UI/Wallet/WalletWindow/TransferSuccessful",
     editContact: "UI/PeopleAndPlaces/EditContact",
     removeContact: "UI/PeopleAndPlaces/RemoveContact",
     blockContact: "UI/PeopleAndPlaces/BlockContact",
@@ -656,14 +658,14 @@
     const isContact = contactIDs.has(ownerID);
     if (organization) {
       const editable = canManage && !npc;
-      return { showInfo: isCharacterContact(ownerID), mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
+      return { showInfo: true, mail: false, add: editable && !isContact, edit: editable && isContact, block: false, unblock: false, money: false, inviteToFleet: false, formFleetWith: false };
     }
     const isBlocked = blockedIDs.has(ownerID);
     if (!isCharacterContact(ownerID)) {
       // A corporation's, an alliance's or a faction's (menusvc.py GetMenuFromItemIDTypeID, 2304 to 2318): Edit and
       // Remove Contact where it is one, Add Contact where not, an NPC's as well; Block or Unblock where it is no NPC's.
-      // Its Show Info the page's info window does not show yet (it shows a character, a type and an object).
-      return { showInfo: false, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
+      // Show Info2297 carries the actual owner type, including NPC owners.
+      return { showInfo: true, mail: false, add: !isContact, edit: isContact, block: !npc && !isBlocked, unblock: !npc && isBlocked, money: false, inviteToFleet: false, formFleetWith: false };
     }
     return {
       // OfferShowInfo (350 to 353): every character's (an aura agent's aside, which no address book holds).
@@ -683,11 +685,14 @@
     };
   }
 
-  /** Show Info from an owner's menu (menusvc.py 579 to 580): the character's information window. */
+  function ownerSearchResult(resultType: number): boolean {
+    return resultType === RESULT_TYPE.character || resultType === RESULT_TYPE.corporation || resultType === RESULT_TYPE.alliance || resultType === RESULT_TYPE.faction;
+  }
+  /** Show Info from an owner's menu (menusvc.py 579 to 580). */
   function ownerInfo(ownerID: number): void {
     menuFor = null;
     searchMenuFor = null;
-    showInfo({ kind: "character", characterID: ownerID });
+    void run(() => showOwnerInfo(flow, ownerID));
   }
 
   /** Send Pilot EVEMail from an owner's menu (menusvc.py 590 to 591): the mail window, a new message to the pilot. */
@@ -773,47 +778,10 @@
     return filledWord(FLEET_WORDS.squadWithCount, "{squadName} [{numMembers}]", { squadName, numMembers: String(squad.numMembers) });
   }
 
-  /** The transfer window (transferMoneyWnd.py): to whom, what is typed, and what the pilot has (none while not known). */
-  let transferring = $state<{ readonly toID: number; readonly toName: string; amount: string; reason: string; wealth: number | null } | null>(null);
-
-  /** A word of the transfer window's with its character's name (FromCharacter, ToCharacter). */
-  function transferWord(label: string, own: string, characterID: number | null, name: string): string {
-    return plainText(formatTemplate(word(label, own), { charID: characterID }, { nameOf: () => name }));
-  }
-
-  /**
-   * Give Money from an owner's menu (menusvc.py 615 to 616; walletSvc.py TransferMoney, 142 to 151): the transfer
-   * window for the character, its amount the least (93), at most what the pilot has as the client keeps it.
-   */
-  function giveMoneyTo(ownerID: number, name: string): void {
-    menuFor = null;
-    searchMenuFor = null;
-    error = "";
-    transferring = { toID: ownerID, toName: name, amount: "0.1", reason: "", wealth: null };
-    void flow.pilotWealth().then((wealth) => {
-      if (transferring !== null && transferring.toID === ownerID) transferring.wealth = wealth;
-    }).catch(() => {});
-  }
-
-  /** The amount's field let go of: what it holds made what the client's float field would hold. */
-  function transferAmountLeft(): void {
-    if (transferring !== null) transferring.amount = String(transferAmount(transferring.amount, transferring.wealth));
-  }
-
-  /**
-   * OK (Confirm, 138 to 152): nothing where the amount is not above nought; otherwise GiveCash, the transfer said to
-   * have been made (message_player), and the window closed.
-   */
-  function confirmTransfer(): void {
-    const held = transferring;
-    if (held === null) return;
-    const amount = transferAmount(held.amount, held.wealth);
-    if (!(amount > 0)) return;
-    void run(async () => {
-      await flow.giveMoney(held.toID, amount, transferReason(held.reason));
-      notify({ kind: "good", title: word(WORDS.transferSuccessful, "ISK given"), key: `transfer:${held.toID}:${Date.now()}` });
-      transferring = null;
-    });
+  /** Owner-menu Give Money uses the shared native transfer window. */
+  function giveMoneyTo(ownerID: number, _name: string): void {
+    menuFor = null; searchMenuFor = null;
+    void run(() => flow.openMoneyTransfer(ownerID));
   }
 
   /** A write of the window's, its refusal said. */
@@ -1471,7 +1439,7 @@
 
   /**
    * Show Info of several (menuMerge._ExecMulti: not one of menu/__init__.py's MULTI_FUNCTIONS, so each agent's own is
-   * run): the page has one information window, which is left on the last.
+   * run): each request follows infosvc's reuse/new-window policy, in order.
    */
   function severalInfo(): void {
     agentMenuFor = null;
@@ -2090,32 +2058,6 @@
     <BookmarkWindow {store} {flow} place={bookmarking} onDone={() => (bookmarking = null)} />
   {/if}
 
-  {#if transferring !== null}
-    <!-- The transfer window (TransferMoneyWnd, transferMoneyWnd.py 49 to 102): from whom and to whom, the amount and
-         the reason, OK and Cancel. -->
-    <section class="contacts-confirm" aria-label={word(WORDS.transferMoney, "Give ISK")}>
-      <h3>{word(WORDS.transferMoney, "Give ISK")}</h3>
-      <p>{transferWord(WORDS.fromCharacter, "Giver: {[character]charID.name}", myID, $station.online?.characterName ?? "")}</p>
-      <p>{transferWord(WORDS.toCharacter, "Receiver: {[character]charID.name}", transferring.toID, transferring.toName)}</p>
-      <p class="controls">
-        <label>
-          {word(WORDS.amount, "Amount")}
-          <input type="text" inputmode="decimal" bind:value={transferring.amount} onblur={transferAmountLeft} />
-        </label>
-      </p>
-      <p class="controls">
-        <label>
-          {word(WORDS.reason, "Reason")}
-          <input type="text" maxlength={TRANSFER_REASON_MAX} bind:value={transferring.reason} />
-        </label>
-      </p>
-      <p class="controls">
-        <button type="button" class="primary" disabled={busy} onclick={confirmTransfer}>{word(WORDS.ok, "OK")}</button>
-        <button type="button" class="minor" onclick={() => (transferring = null)}>{word(WORDS.cancel, "Cancel")}</button>
-      </p>
-    </section>
-  {/if}
-
   {#if folderNaming !== null}
     <!-- The name popup (utilWindows.NamePopup) of Create Folder or a folder's Change Label. -->
     <section class="contacts-confirm" aria-label={folderNaming.id === null ? word(AGENT_WORDS.typeName, "Folder name") : word(AGENT_WORDS.typeInNewName, "New name")}>
@@ -2301,7 +2243,7 @@
                 {#if group.resultType === RESULT_TYPE.agent}
                   {@const line = agentLineOf(owner.id, owner.name)}
                   <!-- An agent's entry (AgentEntry), as in the Agents tab. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={line.nameLine} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) agentDoubleClick(owner.id); }}>
                     <div>
                       <strong>{line.nameLine}</strong>
                       {#if line.missionState !== null}
@@ -2348,7 +2290,7 @@
                 {:else}
                   {@const offers = offersOf(owner.id)}
                   <!-- An owner's entry (User): its name, and the address book's part of its menu. -->
-                  <div class="agents-entry">
+                  <div class="agents-entry" role="group" aria-label={owner.name} ondblclick={event => { if (ownerSearchResult(group.resultType) && !(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, owner.id)); }}>
                     <div>
                       {owner.name}
                       {#if blockedIDs.has(owner.id)}<span class="badge">{word(WORDS.blocked, "Blocked")}</span>{/if}
@@ -2386,6 +2328,12 @@
                         {@render memberPlaces(inviteMenuOf(owner.id), (place) => fleetInviteTo(owner.id, place))}
                       {/if}
                       <OwnerChatMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
+                      <OwnerMemberMenu {store} {flow} ownerID={owner.id} onDone={fleetDone} />
+                      <OwnerQuitMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerExpelMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerCEOMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      <OwnerDecorationMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />
+                      {#if isCharacterContact(owner.id)}<OwnerCorporationInviteMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} /><OwnerCorporationCashMenu {store} {flow} ownerIDs={[owner.id]} onDone={fleetDone} />{/if}
                       {#if fleetMenuOffered(owner.id)}
                         {@render fleetSubmenu(owner.id)}
                       {/if}
@@ -2506,7 +2454,7 @@
           </thead>
           <tbody>
             {#each shown.rows as row (row.id)}
-              <tr class:selected={selectedIDs.includes(row.id)}>
+              <tr class:selected={selectedIDs.includes(row.id)} ondblclick={event => { if (!(event.target as Element).closest("button,input,select,a")) void run(() => doubleClickOwner(flow, row.id)); }}>
                 <td>
                   <!-- The entry selected or not (the scroll's multiSelect), which the page has as a box. -->
                   <input type="checkbox" aria-label={`Select ${row.name}`} checked={selectedIDs.includes(row.id)} onchange={() => toggleSelected(row.id)} />
@@ -2591,6 +2539,12 @@
                       {@render memberPlaces(inviteMenuOf(row.id), (place) => fleetInviteTo(row.id, place))}
                     {/if}
                     {#if selectedRows.length <= 1}<OwnerChatMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerMemberMenu {store} {flow} ownerID={row.id} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerQuitMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerExpelMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerCEOMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1}<OwnerDecorationMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
+                    {#if selectedRows.length <= 1 && isCharacterContact(row.id)}<OwnerCorporationInviteMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} /><OwnerCorporationCashMenu {store} {flow} ownerIDs={[row.id]} onDone={fleetDone} />{/if}
                     {#if fleetMenuOffered(row.id)}
                       {@render fleetSubmenu(row.id)}
                     {/if}

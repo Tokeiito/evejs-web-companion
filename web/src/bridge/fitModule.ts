@@ -230,6 +230,7 @@ export async function unloadModuleToContainer(
   banks: WeaponBanks,
   clearGroup: () => Promise<boolean>,
   destination: ModuleDestination,
+  prepareDestination?: () => Promise<boolean>,
 ): Promise<{ readonly applied: boolean } | undefined> {
   let masterModuleID: number | null = null;
   if (weaponBankOf(banks, itemID) !== null) {
@@ -237,6 +238,8 @@ export async function unloadModuleToContainer(
     masterModuleID = masterOf(banks, itemID) ?? itemID;
     await act("dogmaIM", "DestroyWeaponBank", [place.shipID, masterModuleID]);
   }
+  // Native destination bind/GetItem follows any bank breakup, before UnloadAmmo.
+  if (prepareDestination && !await prepareDestination()) return undefined;
   const unloaded = masterModuleID ?? itemNumber(itemID);
   if (destination.auditLogOwnerID !== undefined && destination.auditLogOwnerID !== null && destination.flag === null) {
     await act("dogmaIM", "UnloadAmmo", [place.shipID, unloaded, [destination.containerItemID, destination.auditLogOwnerID, null]]);

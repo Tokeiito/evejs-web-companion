@@ -28,6 +28,10 @@ const { createPilotMutationFence } = require("./pilotMutationFence");
 const { createPilotTransport, isGamePortHandle, pilotTransportSetting } = require("./pilotTransport");
 const { createGamePortPilots } = require("./gamePort/pilots");
 const { createEwarTypes } = require("./gamePort/ewarTypes");
+const { createGodmaEffectData } = require("./gamePort/godmaEffectData");
+const { createGodmaAttributeData } = require("./gamePort/godmaAttributeData");
+const { createGodmaPrimaryTypeNames } = require("./gamePort/godmaTypeNames");
+const { createClientDogmaStaticAttributes } = require("./gamePort/clientDogmaStaticAttributes");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -97,6 +101,7 @@ const {
   resolveFailedTransition,
   waitForTransitionReady,
 } = require("./transitionBarrier");
+const { corporationSessionRefusal } = require("./corporationSessionReason");
 
 // Map a bot-script store error (it carries a .code) to an HTTP status + envelope.
 const BOTSCRIPT_STATUS = {
@@ -189,6 +194,9 @@ app.locals.gatewayLedger = gatewayLedger;
 const pilotSetting = options.pilotTransportFor ? null : pilotTransportSetting(options.env || process.env);
 const someoneOnGamePort = pilotSetting !== null &&
   (pilotSetting.fallback === "gameport" || [...pilotSetting.overrides.values()].includes("gameport"));
+const nativeAttributeData = createGodmaAttributeData({
+  dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
+});
 const gamePortPilots = options.gamePortPilots !== undefined
   ? options.gamePortPilots
   : someoneOnGamePort && !options.eveGatewayClient
@@ -210,6 +218,40 @@ const gamePortPilots = options.gamePortPilots !== undefined
         dogmaEffects: async (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
         categoryOf: (typeID) => (staticData.getType(typeID) || {}).categoryID ?? null,
       }).ewarTypeOf,
+      // godma's named effect rows use the installed client's ordered default
+      // relationships and definitions. A failed read is not an empty table.
+      nativeEffectData: createGodmaEffectData({
+        typeDogma: async (typeID) => {
+          const rows = await clientBuiltData.rows("typeDogma", [typeID]);
+          return rows ? rows[String(typeID)] : undefined;
+        },
+        dogmaEffects: (effectIDs) => clientBuiltData.rows("dogmaEffects", effectIDs),
+        messages: (messageIDs) => clientWords.messages(messageIDs),
+      }),
+      nativeAttributeData,
+      // Local type values for the future native attribute-object factory.
+      // Preparing them never registers an item or supplies an accurate value.
+      nativeTypeAttributes: createClientDogmaStaticAttributes({
+        attributeData: nativeAttributeData,
+        typeDogma: async id => {
+          const rows = await clientBuiltData.rows("typeDogma", [id]);
+          return rows ? rows[id] : undefined;
+        },
+        types: async id => {
+          const rows = await clientBuiltData.rows("types", [id]);
+          return rows ? rows[id] : undefined;
+        },
+      }),
+      // Installed primary-English type names, prepared before synchronous
+      // diagnostic reads. Alternate important-language/QA policy is separate.
+      nativeTypeNames: createGodmaPrimaryTypeNames({
+        typeNameIDs: () => clientBuiltData.table("typeNameIDs"),
+        messages: ids => clientWords.messages(ids),
+        language: () => clientWords.status().language,
+      }),
+      onNumericChargeError: (message, error, characterID) => {
+        console.error(`[game-port] pilot ${characterID}:`, message, error);
+      },
       // The server asked the client something. Say what, and what it was told.
       onClientCall: (call, characterID) => {
         const asked = `[game-port] pilot ${characterID}: the server called ${call.service}.${call.method} on the client`;
@@ -902,6 +944,10 @@ app.use((req, res, next) => {
     next();
     return;
   }
+  if (req.path === "/api/bridge/call" && req.body?.service === "corpRegistry" && (req.body?.method === "ResignFromCEO" || req.body?.method === "KickOutMember" && Number(req.body?.args?.[0]) === Number(held.characterID))) {
+    res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
+    return;
+  }
   res.status(409).json({
     ok: false,
     error: "SESSION_CHANGE_IN_PROGRESS",
@@ -1049,6 +1095,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     });
     return;
   }
+  if (objectKind === "trade" && !(typeof body.of === "string" && /^[A-Za-z0-9_-]{32}$/.test(body.of))) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A received direct-trade reference is required." });
+    return;
+  }
   if (objectKind === "planet" && !(Number.isSafeInteger(body.of) && body.of > 0)) {
     res.status(400).json({ ok: false, error: "INVALID_PLANET", message: "A positive planetID is required." });
     return;
@@ -1067,6 +1117,10 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // (A fleet's number as its routes take one: a whole number above nought, or the text of one.)
   if (objectKind === "fleetByNumber" && strictPositiveID(body.of) === null) {
     res.status(400).json({ ok: false, error: "INVALID_FLEET_ID", message: "A positive fleetID is required." });
+    return;
+  }
+  if (objectKind === "corporationExpected" && strictPositiveID(body.of) === null) {
+    res.status(400).json({ ok: false, error: "INVALID_CORPORATION", message: "A corporation action names the corporation it was opened for." });
     return;
   }
   // (An invitation turned down goes with the client's word for it or with none: true, false, or nothing at all.)
@@ -1130,6 +1184,13 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // client's session manager makes it and as its route made it (bridgeCallPolicy.js, PAGE_PLACE_CHANGE_CALLS): it
   // is answered as any call here is, once the pilot is usable in its new place.
   const placeChange = placeChangeOf(body.service, body.method, body.args);
+  if (objectKind === "corporationExpected") {
+    if (body.service === "account") await dispatchCorporationCashWrite(req, res, next, body);
+    else if (body.service === "corporationSvc") await dispatchCorporationMedalWrite(req, res, next, body);
+    else if (["UpdateApplicationOffer", "InsertInvitation"].includes(body.method)) await dispatchCorporationRecruitmentWrite(req, res, next, body);
+    else await dispatchCorporationMemberWrite(req, res, next, body);
+    return;
+  }
   if (placeChange !== null) {
     await dispatchPlaceChangeWrite(req, res, next, placeChange, body.service, body.method,
       Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
@@ -1141,13 +1202,26 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
   // session, like retail. A browser-supplied bridgeSessionID is ignored; only
   // the server-held handle is ever forwarded.
   const heldBridgeSession = bridgeSessions.get(req.webSessionID) || null;
+  // The native scalar cache is filled by its caller after this RPC. Retiring
+  // that tasklet releases its pending/throttled wait; the issued packet remains.
+  const scalarController = !write && body.pilot === true && body.service === "corpmgr" && body.method === "GetAggressionSettings"
+    && Array.isArray(body.args) && body.args.length === 1 && Number.isSafeInteger(body.args[0]) && body.args[0] > 0
+    && heldBridgeSession && isGamePortHandle(heldBridgeSession.bridgeSessionID) ? new AbortController() : null;
+  const scalarClosed = () => { if (!res.writableEnded) scalarController?.abort(); };
+  if (scalarController) res.once("close", scalarClosed);
+  const scalarSignal = scalarController ? req.operationSignal ?? scalarController.signal : undefined;
   try {
     // With no pilot held this is the account asking (the hangar's roster is the client's character selection
     // screen), and the seam sends what the retail client asks there to where the account is (pilotTransport.js).
     // (A write is a pilot's, so one is held; and it is made under the checks every write of a held pilot's is
     // under, as its route made it.)
     // (A call on a planet's object goes by the bind its route went by: bound once for the planet and kept.)
-    const outcome = objectKind === "planet"
+    const outcome = objectKind === "trade"
+      ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => {
+        if (!gamePortPilots || !isGamePortHandle(heldBridgeSession.bridgeSessionID)) throw Object.assign(new Error("Direct trade needs a game-port pilot."), { code: "CALL_REFUSED", statusCode: 409 });
+        return boundCall(heldBridgeSession, req.webSessionID, { key: "trade:" + JSON.stringify(body.of), service: "trademgr", method: "MachoBindObject", args: [body.of], kwargs: null }, body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null);
+      }) }
+      : objectKind === "planet"
       ? { service: body.service, method: body.method, ...await heldRequest(heldBridgeSession, req.webSessionID, write, () => boundCall(
         heldBridgeSession, req.webSessionID, planetBindSpec(body.of), body.method, Array.isArray(body.args) ? body.args : [], body.kwargs ?? null)) }
       // (A call on an agent's object goes by the bind an agent's routes go by: bound for that agent, and kept.)
@@ -1225,6 +1299,7 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
         body.kwargs,
         { ...clientSessionFields, userid: Number(req.account.accountID) },
         heldBridgeSession ? heldBridgeSession.bridgeSessionID : undefined,
+        ...(scalarSignal ? [scalarSignal] : []),
       );
     res.json({
       ok: true,
@@ -1241,8 +1316,12 @@ app.post("/api/bridge/call", requireAuth, async (req, res, next) => {
     if (heldBridgeSession && error && error.code === "SESSION_NOT_FOUND") {
       forgetBridgeSession(req.webSessionID, heldBridgeSession);
     }
+    if (scalarSignal?.aborted) {
+      if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The scalar aggression caller has retired." });
+      return;
+    }
     next(error);
-  }
+  } finally { if (scalarController) res.removeListener("close", scalarClosed); }
 });
 
 /**
@@ -1630,6 +1709,8 @@ function makeHeldCharacter(account, characterID, outcome) {
     transition: null,
     transitionReservation: null,
     cooldownUntilMs: 0,
+    nativeSessionChangeReason: "charsel",
+    corporationCEOSelection: null,
     stream: null,
     streamSubscribers: new Set(),
     streamCursor: null,
@@ -1968,6 +2049,11 @@ async function inventoryCall(held, webSessionID, of, method, args, kwargs) {
     spec = hangarBindSpec(held);
   } else if (Number(of) === Number(held.activeShipID)) {
     spec = cargoBindSpec(held, held.activeShipID);
+  } else if (method === "EnterPassword" && held.boundHandles.has(`container:${Number(of)}`)) {
+    // invCache1450-1477 enters on the challenged moniker, without an office discovery read.
+    spec = containerBindSpec(Number(of));
+  } else if (method === "EnterPassword" && held.boundHandles.has(`corpOffice:${Number(of)}`)) {
+    spec = corpOfficeBindSpec(Number(of));
   } else {
     // The corporation's office where the pilot is docked is bound as the corporation hangar's read binds it, so that
     // the two are one bind (the client's invCache keeps one inventory a thing) and a write to it is held to the office
@@ -4619,6 +4705,7 @@ async function dispatchShipSwapWrite(req, res, next, service, method, args, targ
     const expected = {
       shipID: Number(targetShipID) || null,
       fromShipID: Number(before.flight && before.flight.shipID) || Number(held.activeShipID) || null,
+      nativeReason: method === "Eject" ? "eject" : method === "StoreVessel" ? "storeVessel" : ["Board", "BoardStoredShip"].includes(method) ? "board" : null,
     };
     if (!await acquireRouteTransition(res, held, "board", expected)) {
       return;
@@ -4807,6 +4894,7 @@ async function dispatchPlaceChangeWrite(req, res, next, kind, service, method, a
     // (A cyno's jump, a jump gate's and a filament's into its pocket are kept as a stargate's: a session into another
     // system, the park bound again there.)
     const keeping = kind === "cyno" || kind === "bridge" || kind === "abyss" || kind === "abyssExit" || kind === "abyssEntrance" ? "stargate" : kind;
+    expected.nativeReason = kind === "abyss" || kind === "abyssEntrance" ? "JumpToAbyss" : kind === "abyssExit" ? "abyssToKnownJump" : keeping === "stargate" ? "jump" : keeping;
     if (!await acquireRouteTransition(res, held, keeping, expected)) {
       return;
     }
@@ -6621,13 +6709,203 @@ function readIndustryJobStatus(row) {
 
 // Dispatch a top-level (non-bound) call on the held live session. A lost
 // persistent session drops the whole held session (as /api/bridge/call).
-async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs) {
+// base_corporation.KickOut self and CEO resignation use PerformSessionChange.
+// This is a corporation mutation, not a scene arrival: its native lock ends with
+// the RPC, even if the server answers None without changing corporation.
+async function dispatchCorporationMemberWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const corporationID = strictPositiveID(body.of), args = body.args;
+  const multiple = body.method === "KickOutMembers", resigning = body.method === "ResignFromCEO", walletSwitch = body.method === "SetAccountKey";
+  if (!Array.isArray(args) || args.length !== 1 || (walletSwitch ? !Number.isInteger(args[0]) || args[0] < 1000 || args[0] > 1006 : multiple ? !Array.isArray(args[0]) || args[0].some(id => strictPositiveID(id) === null) : !(resigning && args[0] === null) && strictPositiveID(args[0]) === null) || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: walletSwitch ? "SetAccountKey names one corporation wallet division1000 through1006, with no keyword arguments." : resigning ? "ResignFromCEO names one successor ID or None, with no keyword arguments." : multiple ? "KickOutMembers names one list of characters and no keyword arguments." : "KickOutMember names one character and no keyword arguments." });
+    return;
+  }
+  let mutation = null;
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    const native = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    const contextNotifications = [];
+    let expectedCorporationVersion, currentAllianceID = null;
+    const currentCorporation = async () => {
+      if (native) {
+        const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+        expectedCorporationVersion ??= context.version;
+        currentAllianceID = context.allianceID ?? null;
+        return context.corporationID;
+      }
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null);
+      contextNotifications.push(...(answer.notifications ?? []));
+      const header = mailListItems(readMailKeyVal(answer.result, "header"));
+      const line = mailListItems(readMailKeyVal(answer.result, "line"));
+      currentAllianceID = strictPositiveID(answer.result?.fields?.allianceID ?? readMailKeyVal(answer.result, "allianceID") ?? line[header.indexOf("allianceID")]);
+      return answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")];
+    };
+    const currentCorporationID = await currentCorporation();
+    let beforeNoticeCount = contextNotifications.length;
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (strictPositiveID(currentCorporationID) !== corporationID) {
+      res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "This action belongs to the pilot's previous corporation." });
+      return;
+    }
+    held.corporationID = corporationID;
+    if (walletSwitch || resigning || !multiple && Number(args[0]) === Number(held.characterID)) {
+      if (resigning) {
+        if (args[0] === null) held.corporationCEOSelection = null;
+        else {
+          const choice = held.corporationCEOSelection;
+          if (!choice || choice.corporationID !== corporationID || choice.version !== expectedCorporationVersion || choice.epoch !== held.transitionEpoch || !choice.candidates.includes(Number(args[0]))) {
+            throw Object.assign(new Error("This successor choice no longer belongs to its original resignation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+          }
+          // ResignFromCEO821-823 explicitly clears the timer before the selected
+          // candidate retry. Only this operation's returned candidates authorize it.
+          held.corporationCEOSelection = null;
+          held.cooldownUntilMs = 0;
+        }
+      }
+      // Native PerformSessionChange(wait=0): an active cooldown refuses rather
+      // than queueing a quit that could later target a different corporation.
+      if (held.transition && held.transition.phase !== "ready" || !walletSwitch && Number(held.cooldownUntilMs || 0) > routeTransitionNow()) {
+        res.status(409).json(corporationSessionRefusal(held, routeTransitionNow()));
+        return;
+      }
+      if (!beginRouteTransition(res, held, "other-session", { nativeReason: walletSwitch ? "corp.setaccountkey" : resigning ? "corp.resignceo" : "corp.kickself", ...(walletSwitch ? { violateSafetyTimer: true } : {}) })) return;
+      mutation = held.transition;
+    }
+    if (resigning && args[0] === null) {
+      // __ResignFromCEO's local alliance refusal runs inside PerformSessionChange:
+      // native busy refusal wins, and a UserError rolls back the timer without RPC.
+      if (native) {
+        const now = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+        if (now.version !== expectedCorporationVersion || Number(now.corporationID) !== corporationID) throw Object.assign(new Error("This resignation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+        currentAllianceID = now.allianceID ?? null;
+      } else if (strictPositiveID(await currentCorporation()) !== corporationID) throw Object.assign(new Error("This resignation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+      if (currentAllianceID !== null) {
+        let memberCount;
+        if (native) {
+          const context = await gamePortPilots.corporationResignationContext({ userid: held.accountID }, held.bridgeSessionID);
+          if (context.version !== expectedCorporationVersion || Number(context.corporationID) !== corporationID) throw Object.assign(new Error("This resignation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+          memberCount = context.memberCount;
+        } else {
+          const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetEveOwners", [], null);
+          contextNotifications.push(...(answer.notifications ?? []));
+          memberCount = require("./gamePort/pilotCorporationMembers").corporationMemberIDsOf(answer.result).length;
+          if (strictPositiveID(await currentCorporation()) !== corporationID) throw Object.assign(new Error("This resignation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+        }
+        assertCurrentHeldSession(held, req.webSessionID);
+        if (memberCount < 2) throw Object.assign(new Error("CanNotDestroyCorpInAlliance"), { code: "CALL_REFUSED", statusCode: 409, refusal: { key: "CanNotDestroyCorpInAlliance", values: { type: "dict", entries: [] } } });
+      }
+    }
+    beforeNoticeCount = contextNotifications.length;
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, corporationID, expectedCorporationVersion);
+    const afterCorporationID = strictPositiveID(await currentCorporation());
+    if (afterCorporationID !== null) held.corporationID = afterCorporationID;
+    if (resigning && args[0] === null && afterCorporationID === corporationID) {
+      const candidates = outcome.result?.type === "list" ? outcome.result.items : Array.isArray(outcome.result) ? outcome.result : null;
+      if (Array.isArray(candidates) && candidates.every(id => strictPositiveID(id?.type === "long" ? id.value : id) !== null)) {
+        held.corporationCEOSelection = { corporationID, version: expectedCorporationVersion, epoch: held.transitionEpoch, candidates: candidates.map(id => Number(id?.type === "long" ? id.value : id)) };
+      }
+    }
+    if (mutation && held.transition === mutation) {
+      Object.assign(mutation, { phase: "ready", locationReady: true, sceneReady: true, egoReady: true, shipReady: true, boundContextReady: true });
+    }
+    res.json({ ok: true, service: "corpRegistry", method: body.method, result: outcome.result ?? null,
+      notifications: [...contextNotifications.slice(0, beforeNoticeCount), ...(outcome.notifications ?? []), ...contextNotifications.slice(beforeNoticeCount)], ...pilotClock(held) });
+  } catch (error) {
+    if (mutation && held.transition === mutation) {
+      if (["CALL_REFUSED", "SESSION_REQUEST_RETIRED", "SESSION_NOT_FOUND"].includes(error?.code)) cancelHeldTransition(held);
+      else markTransitionFailed(held, error?.message);
+    }
+    next(error);
+  }
+}
+
+// medals.py38/49/108/116 use a top-level RemoteSvc. `of` is only our original-dialog
+// fence; it must never turn this into a corpRegistry call or another RPC argument.
+async function dispatchCorporationMedalWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const args = body.args, corporationID = strictPositiveID(body.of);
+  const creating = body.method === "CreateMedal";
+  const validCommon = Array.isArray(args) && [3, 4].includes(args.length) && (args.length === 3 || args[3] === true) && body.kwargs == null;
+  const validArguments = validCommon && (creating ?
+    typeof args[0] === "string" && typeof args[1] === "string" && Array.isArray(args[2]) && args[2].every(row => Array.isArray(row) && row.length === 3 && Number.isSafeInteger(row[0]) && typeof row[1] === "string" && Number.isSafeInteger(row[2])) :
+    body.method === "GiveMedalToCharacters" && strictPositiveID(args[0]) !== null && Array.isArray(args[1]) && args[1].length > 0 && args[1].every(id => strictPositiveID(id) !== null) && typeof args[2] === "string");
+  if (!validArguments) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: creating ? "Creation names a title, description, graphics list and optional confirmed True." : "An award names one medal, a recipient list, a reason and optional confirmed True." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    const native = Boolean(gamePortPilots && isGamePortHandle(held.bridgeSessionID));
+    let context, notifications = [];
+    if (native) context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    else {
+      const answer = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", "GetCorporation", [], null);
+      notifications = answer.notifications ?? [];
+      const header = mailListItems(readMailKeyVal(answer.result, "header")), line = mailListItems(readMailKeyVal(answer.result, "line"));
+      context = { corporationID: answer.result?.fields?.corporationID ?? readMailKeyVal(answer.result, "corporationID") ?? line[header.indexOf("corporationID")] };
+    }
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (strictPositiveID(context.corporationID) !== corporationID) throw Object.assign(new Error("This decoration operation belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, body.service, body.method, args, null, corporationID, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: [...notifications, ...(outcome.notifications ?? [])], ...pilotClock(held) });
+  } catch (error) { next(error); }
+}
+
+// transferMoneyWnd150: the source corporation is the session's, so retain the
+// original corporation through the final dispatch without changing the RPC.
+async function dispatchCorporationCashWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res); if (!held) return;
+  const args = body.args, origin = strictPositiveID(body.of), kwargs = body.kwargs;
+  // Shared character-recipient TransferMoneyWnd. The origin is private metadata;
+  // only its three original arguments and two keywords reach the native service.
+  if (!origin || !Array.isArray(args) || args.length !== 3 || strictPositiveID(args[0]) === null ||
+      !Number.isFinite(args[1]) || !(args[1] > 0) || !(args[2] === null || Number.isInteger(args[2]) && args[2] >= 1000 && args[2] <= 1006) ||
+      !kwargs || kwargs.toAccountKey !== null || typeof kwargs.reason !== "string" || Object.keys(kwargs).some(key => !["toAccountKey", "reason"].includes(key))) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A corporation cash transfer names one character, amount and source division." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation cash transfers require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
+    const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This cash transfer belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "account", "GiveCashFromCorpAccount", args, kwargs, origin, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: outcome.notifications ?? [], ...pilotClock(held) });
+  } catch (error) { next(error); }
+}
+
+// base_corporation1145-1149 / CorpApplicationEntry746-770: the recipient's target
+// corporation argument does not select its originating current registry.
+async function dispatchCorporationRecruitmentWrite(req, res, next, body) {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  const args = body.args, origin = strictPositiveID(body.of);
+  const text = args?.[3];
+  const sender = body.method === "InsertInvitation";
+  const validArguments = Array.isArray(args) && (sender ? args.length === 1 && strictPositiveID(args[0]) !== null :
+    args.length === 7 && strictPositiveID(args[0]) !== null && args[1] === held.characterID && strictPositiveID(args[2]) !== null &&
+    (typeof text === "string" || text?.type === "wstring" && typeof text.value === "string") &&
+    [2, 3, 7].includes(args[4]) && args[5] === "" && args[6] === null);
+  if (!validArguments || !origin || body.kwargs != null) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: sender ? "An invitation names one character." : "A recipient decision names its own application and the original seven arguments." }); return;
+  }
+  try {
+    assertCurrentHeldSession(held, req.webSessionID);
+    if (!gamePortPilots || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("Corporation recruitment actions require the game port."), { code: "CALL_REFUSED", statusCode: 409 });
+    const context = gamePortPilots.corporationContext({ userid: held.accountID }, held.bridgeSessionID);
+    if (strictPositiveID(context.corporationID) !== origin) throw Object.assign(new Error("This action belongs to the pilot's previous corporation."), { code: "SESSION_REQUEST_RETIRED", statusCode: 409 });
+    const outcome = await heldTopLevelCall(held, req.webSessionID, "corpRegistry", body.method, args, null, origin, context.version);
+    res.json({ ok: true, service: body.service, method: body.method, result: outcome.result ?? null, notifications: outcome.notifications ?? [], ...pilotClock(held) });
+  } catch (error) { next(error); }
+}
+
+async function heldTopLevelCall(held, webSessionID, service, method, args, kwargs, expectedCorporationID, expectedCorporationVersion) {
   return heldRequest(held, webSessionID, isBridgeWritePair(service, method), () => gateway.callMethod(
     service,
     method,
     args,
     kwargs,
-    { userid: held.accountID },
+    { userid: held.accountID, ...(expectedCorporationID === undefined ? {} : { expectedCorporationID, expectedCorporationVersion }) },
     held.bridgeSessionID,
   ));
 }
@@ -9095,6 +9373,9 @@ function routeTransitionNow() {
 function beginRouteTransition(res, held, kind, expected) {
   const begun = beginHeldTransition(held, kind, expected, routeTransitionNow());
   if (begun.ok) {
+    held.corporationCEOSelection = null;
+    const reason = expected?.nativeReason === undefined ? ({ undock: "undock", dock: "dock", stargate: "jump", board: "board", clone: "clonejump" }[kind] ?? null) : expected.nativeReason;
+    if (reason !== null) held.nativeSessionChangeReason = reason;
     return true;
   }
   res.status(409).json({
@@ -13139,8 +13420,8 @@ const OWNER_NAME_KINDS = Object.freeze({
   alliance: (typeID) => typeID === OWNER_TYPE.alliance,
   character: (typeID) => typeID > 0 && !Object.values(OWNER_TYPE).includes(typeID),
   owner: (typeID) => typeID > 0,
-  // cfg.eveowners.typeID for evelink.character_link: retain the native owner's actual character type.
-  ownerType: (typeID) => typeID > 0,
+  // cfg.eveowners' actual type, including valid generic type0/group0 rows.
+  ownerType: (typeID) => Number.isSafeInteger(typeID) && typeID >= 0,
   // An owner's group, by name (a mailing list's access lists): any owner's row, its type's group named.
   ownerGroup: (typeID) => typeID > 0,
 });
@@ -14362,6 +14643,45 @@ app.get("/api/bridge/global-config", requireAuth, (req, res, next) => {
   }
 });
 
+// RemoteImageCacher.__GetImageFromUrl: one fresh image read from this pilot's
+// configured image server. The page owns Capture Portrait's size, retries and
+// multi-owner loop; this carries bytes across the browser's image CORS boundary.
+app.get("/api/client-data/portrait-capture", requireAuth, async (req, res, next) => {
+  const held = requireHeldBridgeSession(req, res);
+  if (!held) return;
+  try {
+    const characterID = Number(req.query.characterID), size = Number(req.query.size);
+    if (!Number.isSafeInteger(characterID) || characterID <= 0 || !Number.isSafeInteger(size) || size <= 0) {
+      res.status(400).json({ ok: false, error: "BAD_PORTRAIT", message: "A character and portrait size are required." }); return;
+    }
+    const values = gamePortPilots && isGamePortHandle(held.bridgeSessionID)
+      ? gamePortPilots.globalConfigValues(["imageserverurl"], { userid: held.accountID }, held.bridgeSessionID) : {};
+    const configured = values.imageserverurl;
+    if (typeof configured !== "string") { res.json({ ok: true, image: null }); return; }
+    let base = configured === "" ? "http://xxx.dev.image/" : configured.trim();
+    if (!base.endsWith("/")) base += "/";
+    const url = new URL(`${base}Character/${characterID}_${size}.jpg`);
+    if (!["http:", "https:"].includes(url.protocol)) { res.json({ ok: true, image: null }); return; }
+    const modifiedSince = Number(req.query.modifiedSince);
+    const headers = Number.isFinite(modifiedSince) && modifiedSince > 0
+      ? { "If-Modified-Since": new Date(modifiedSince).toUTCString() } : {};
+    let response;
+    try { response = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(10_000), cache: "no-store" }); }
+    catch { res.json({ ok: true, image: null, transportError: true }); return; }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (response.status === 304) { await response.body?.cancel(); res.json({ ok: true, image: null, notModified: true }); return; }
+    // requests.Response.__nonzero__/ok rejects HTTP 400-599 before the native
+    // image check. 302 is a deliberate skip.
+    if (response.status >= 400 && response.status < 600 || response.status === 302 || !contentType.startsWith("image/")) {
+      await response.body?.cancel(); res.json({ ok: true, image: null }); return;
+    }
+    let bytes;
+    try { bytes = Buffer.from(await response.arrayBuffer()); }
+    catch { res.json({ ok: true, image: null, transportError: true }); return; }
+    res.set("Cache-Control", "no-store").json({ ok: true, image: { contentType, base64: bytes.toString("base64") } });
+  } catch (error) { next(error); }
+});
+
 // How the retail client words each kind of notification (notificationSvc.py FormatNotifications): for each type
 // the labels of notificationUtil's table, or the formatter it has and the labels that formatter is made with, as
 // the client's own code answers (src/clientData/clientNotificationFormats.js). `formats` is null where they could
@@ -14377,6 +14697,43 @@ app.get("/api/client-data/notification-formats", requireAuth, async (req, res, n
 app.post("/api/names", requireAuth, async (req, res, next) => {
   try {
     const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+    if (req.body?.recordset === "eveowners") {
+      // Native cfg.Recordset.Get callers need the row/missing distinction and
+      // propagated failures, rather than the display resolver's best effort.
+      // eveCfg.LoadEveOwners545-583 seeds only NPCs, factions and system owner1;
+      // player rows must come from the session's native config cache.
+      const wanted = [...new Set(items.filter(item => item && item.kind === "owner" && Number.isSafeInteger(item.id)).map(item => item.id))].slice(0, 200);
+      const owners = {}, unknown = [];
+      const seeded = staticData.resolveNames({ items: wanted.filter(id => id > 1 && id < MIN_PLAYER_OWNER_ID).flatMap(id => [{ kind: "owner", id }, { kind: "ownerType", id }]) }).names;
+      for (const id of wanted) {
+        if (id === OWNER_SYSTEM_ID) {
+          const name = clientWords.templates([OWNER_SYSTEM_NAME_LABEL])[OWNER_SYSTEM_NAME_LABEL];
+          if (typeof name !== "string") throw Object.assign(new Error("The client's EVE System name is unavailable."), { code: "CLIENT_DATA_UNAVAILABLE", statusCode: 503 });
+          owners[id] = { name, typeID: 0 };
+        } else if (seeded[`ownerType:${id}`] != null) {
+          owners[id] = { name: seeded[`owner:${id}`] ?? null, typeID: Number(seeded[`ownerType:${id}`]) };
+        } else unknown.push(id);
+      }
+      if (unknown.length) {
+        const held = bridgeSessions.get(req.webSessionID) || null;
+        if (!gamePortPilots || !held || !isGamePortHandle(held.bridgeSessionID)) throw Object.assign(new Error("A game-port pilot is required to read owner records."), { code: "NO_LIVE_SESSION", statusCode: 409 });
+        const controller = new AbortController();
+        const closed = () => { if (!res.writableEnded) controller.abort(); };
+        res.once("close", closed);
+        const signal = req.operationSignal ?? controller.signal;
+        let named;
+        try {
+          named = await heldRequest(held, req.webSessionID, false, () => gamePortPilots.ownersNamed(unknown, { userid: held.accountID }, held.bridgeSessionID, true, signal));
+        } catch (error) {
+          if (!signal.aborted) throw error;
+          if (!res.destroyed) res.status(409).json({ ok: false, error: "SESSION_REQUEST_RETIRED", message: "The owner priming tasklet has retired." });
+          return;
+        } finally { res.removeListener("close", closed); }
+        for (const id of unknown) owners[id] = named.get(id) ?? null;
+      }
+      res.json({ ok: true, source: "cfg.eveowners", owners });
+      return;
+    }
     const result = staticData.resolveNames({ items });
     const names = { ...result.names };
 
@@ -17159,10 +17516,17 @@ app.post("/api/icons/cache", requireAuth, (req, res) => {
 // to the catch-all, the browser receives index.html with a 200, `<img onerror>`
 // never fires, and every uncached icon becomes a permanently broken image.
 // The client's own textures by their res: path, for the page to draw what the client draws with them (a skill
-// group's icon, a skill book's mark): /client-res/ui/texture/... answers the PNG the install's index names for
-// res:/ui/texture/..., or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
+// group's icon, a skill book's mark): /client-res/ui/texture/... answers an indexed PNG or a supported DDS
+// converted to PNG, or 404 (src/clientData/clientTextures.js). No session: the install's pictures do not vary by
 // player. Above the catch-all, for the same reason as the icon cache below.
-app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.png)$/, (req, res) => {
+app.get(/^\/client-res\/(ui\/texture\/[A-Za-z0-9_./-]+\.(?:png|dds))$/, (req, res) => {
+  if (/\.dds$/i.test(req.params[0])) {
+    const png = clientTextures.pngFor?.(`res:/${req.params[0]}`);
+    if (!png) { res.status(404).end(); return; }
+    res.set("Cache-Control", "public, max-age=2592000, immutable");
+    res.type("png").send(png);
+    return;
+  }
   const file = clientTextures.fileFor(`res:/${req.params[0]}`);
   if (!file) {
     res.status(404).end();

@@ -34,9 +34,12 @@ export const TRANSFER_REASON_MAX = 40;
 export function transferAmount(typed: string, wealth: number | null): number {
   const text = typed.trim().replace(/,/g, "");
   if (text === "") return TRANSFER_MIN_ISK;
-  const value = Number(text);
+  // SingleLineEditFloat.ValidateNewText cuts the typed decimal suffix, not
+  // value*100 (which turns 2.55 into 2.54 through binary floating arithmetic).
+  const dot = text.indexOf(".");
+  const value = Number(dot < 0 ? text : text.slice(0, dot + 3));
   if (!Number.isFinite(value)) return 0;
-  const cut = Math.trunc(value * 100) / 100;
+  const cut = value;
   if (wealth !== null && cut > wealth) return wealth;
   return cut < TRANSFER_MIN_ISK ? TRANSFER_MIN_ISK : cut;
 }
@@ -44,6 +47,30 @@ export function transferAmount(typed: string, wealth: number | null): number {
 /** The reason as the window's field gives it: its first forty characters, < and > written as the entities. */
 export function transferReason(typed: string): string {
   return typed.slice(0, TRANSFER_REASON_MAX).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** BaseSingleLineEditNumbers.GetValue320-331: reading does not clamp old text
+ * after SetMaxValue changes only the maximum (125-127).
+ */
+export function transferValue(typed: string): number {
+  const text = typed.trim().replace(/,/g, "");
+  if (text === "") return TRANSFER_MIN_ISK;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** Native InsertCharacters64-100 / Float.ValidateNewText: upper bound while
+ * typing, decimal suffix cut as text, lower bound deferred until focus leaves.
+ */
+export function transferEditedAmount(typed: string, maximum: number, previous: string): string {
+  let text = typed.replace(/[^-0-9e.]/g, "");
+  if (text === "") return "";
+  if (text === "." || text.split(".").length > 2) return previous;
+  const dot = text.indexOf(".");
+  if (dot >= 0) text = text.slice(0, dot + 3);
+  const value = Number(text);
+  if (!Number.isFinite(value) || value < 0) return previous;
+  return value > maximum ? String(maximum) : text;
 }
 
 /**

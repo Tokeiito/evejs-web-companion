@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 65f759873, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js 73fe0d943, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -13,7 +13,8 @@
  *
  * Wire format:
  *   Packet = [4-byte LE payloadLen] [payload]
- *   Payload = [0x7E magic] [4-byte LE mapcount=0] [marshaled data]
+ *   Payload = [0x7E magic] [4-byte LE mapcount] [marshaled data] [mapcount 4-byte LE ids of the shared objects]
+ *   (The encoder shares a rowset's row descriptor alone: see "A rowset's descriptor, written once", below.)
  */
 
 const path = require("path");
@@ -92,6 +93,66 @@ const DBTYPE = {
   WSTR: 0x82,
 };
 
+// Opt-in decode provenance, never typed wrappers or enumerable properties.
+// A record describes the original decoded slot; caller mutations/JSON do not
+// transfer or update it. A root primitive has no containing slot to query.
+const decodedNumberKinds = new WeakMap();
+// CCP blue/src/Marshal.cpp:41-80,1188-1242 constructs distinct scalar classes.
+const opcodeNumberKinds = new Map([
+  ...[Op.PyLongLong, Op.PyLong, Op.PySignedShort, Op.PyByte,
+    Op.PyMinusOne, Op.PyZeroInteger, Op.PyOneInteger, Op.PyVarInteger]
+    .map((opcode) => [opcode, Object.freeze({ kind: "integer", opcode })]),
+  ...[Op.PyReal, Op.PyZeroReal]
+    .map((opcode) => [opcode, Object.freeze({ kind: "real", opcode })]),
+  ...[Op.PyTrue, Op.PyFalse]
+    .map((opcode) => [opcode, Object.freeze({ kind: "boolean", opcode })]),
+]);
+const packedNumberKinds = new Map([
+  ...[DBTYPE.I1, DBTYPE.UI1, DBTYPE.I2, DBTYPE.UI2, DBTYPE.I4,
+    DBTYPE.UI4, DBTYPE.I8, DBTYPE.UI8, DBTYPE.FILETIME]
+    .map((dbType) => [dbType, Object.freeze({ kind: "integer", dbType })]),
+  ...[DBTYPE.R4, DBTYPE.R8, DBTYPE.CY]
+    .map((dbType) => [dbType, Object.freeze({ kind: "real", dbType })]),
+  [DBTYPE.BOOL, Object.freeze({ kind: "boolean", dbType: DBTYPE.BOOL })],
+]);
+
+/** Read original opt-in scalar provenance, or undefined when unknown.
+ * Slots are array indices/object property names. Booleans remain distinct.
+ * Generated packed virtual fields are deliberately unsupported.
+ */
+function getDecodedNumberKind(container, slot) {
+  if (!container || typeof container !== "object" ||
+      (typeof slot !== "string" && typeof slot !== "number")) return undefined;
+  return decodedNumberKinds.get(container)?.get(String(slot));
+}
+
+function setDecodedNumberKind(container, slot, kind) {
+  let kinds = decodedNumberKinds.get(container);
+  if (!kind) {
+    kinds?.delete(String(slot));
+    return;
+  }
+  if (!kinds) decodedNumberKinds.set(container, kinds = new Map());
+  kinds.set(String(slot), kind);
+}
+
+function copyDecodedNumberKinds(source, target) {
+  const kinds = decodedNumberKinds.get(source);
+  if (kinds) decodedNumberKinds.set(target, new Map(kinds));
+  return target;
+}
+
+// Child decodes are synchronous. Capture their kind before another child can
+// replace lastNumberKind; container decodes themselves reset it to unknown.
+function decodeInto(state, container, slot) {
+  const value = decodeValue(state);
+  container[slot] = value;
+  if (state.preserveNumberKinds) {
+    setDecodedNumberKind(container, slot, state.lastNumberKind);
+  }
+  return value;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENCODER
 // ═══════════════════════════════════════════════════════════════════════════
@@ -111,6 +172,12 @@ const DBTYPE = {
  *   { type: 'rawstr', value: '...' }            → PyString/PyLongString UTF-8, bypass string table
  *   Array                    → PyTuple
  *   { type: 'dict', entries: [[k,v], ...] }  → PyDict
+ *   { type: 'dict', realValues: true, entries } → PyDict whose values that are
+ *                              plain numbers go as PyReal, whole or not (a
+ *                              Python float: 100 is sent as 100.0)
+ *   { type: 'dict', realValues: true, integerKeys: [k, ...], entries } → the
+ *                              same, but the values under those keys go as
+ *                              they are (a whole number as an integer)
  *   { type: 'wstring', value: '...' }        → PyWStringUTF8
  *   { type: 'long', value: BigInt|number }   → PyLongLong
  *   { type: 'real', value: number }          → PyReal
@@ -119,18 +186,64 @@ const DBTYPE = {
  *   { type: 'substruct', value: ... }        → PySubStruct
  *   { type: 'substream', value: ... }        → PySubStream
  */
+// ─── A rowset's descriptor, written once ──────────────────────────────────────
+//
+// CCP's writer (blue, Marshal.cpp, WriteStream::ObjectReferenced and Finalize, the stream's version 0) writes an
+// object it meets again as a reference to its first writing: the type TY_REFERENCE (27; PySavedStreamElement here)
+// and the object's id (WriteInteger: a size-ex). The first writing is flagged shared (TY_SHAREDFLAG, 0x40; SAVE_MASK
+// here) on its type byte when it is met the second time, and its id is the order in which objects were so met. After
+// the stream come the ids of the shared objects in the order they stand in it, and the header's count is how many.
+// Tranquility's rowsets go so: a CRowset of ten rows answering GetSkillHistory writes its blue.DBRowDescriptor once,
+// in its header, and each row refers to it (399 bytes recorded; written eleven times here before, 1485).
+//
+// This encoder shares a row descriptor alone, by identity: the rowset builders (serviceHelpers.buildDbRowset) hand
+// one descriptor to the rowset and to each of its rows, as Tranquility's rows have their rowset's. An object this
+// server puts in two places is not otherwise known to be one object on Tranquility, and is written each time.
+let sharing = null;
+
+/** Sharing of its own for a stream about to be written; the sharing it stands in for is answered, to be put back. */
+function startSharing() {
+  const previous = sharing;
+  sharing = { seen: new Map(), shared: [], order: 0 };
+  return previous;
+}
+
+/** A stream's sharing ended: the count into the header's place, and the shared objects' ids after the stream. */
+function finishSharing(mapCount, chunks) {
+  const shared = sharing.shared.slice().sort((left, right) => left.order - right.order);
+  mapCount.writeUInt32LE(shared.length, 0);
+  for (const each of shared) {
+    const id = Buffer.alloc(4);
+    id.writeInt32LE(each.id, 0);
+    chunks.push(id);
+  }
+}
+
+/** Whether a value is a row descriptor (blue.DBRowDescriptor), the one object the encoder shares. */
+function isRowDescriptor(value) {
+  return value.type === "objectex1" && Array.isArray(value.header) && value.header[0] !== null &&
+    typeof value.header[0] === "object" && value.header[0].type === "token" &&
+    value.header[0].value === "blue.DBRowDescriptor";
+}
+
 function marshalEncode(value) {
   const chunks = [];
 
   // Stream header
   chunks.push(Buffer.from([MARSHAL_HEADER]));
-  // Mapcount = 0
+  // Mapcount: how many objects the stream shares, set once the stream is written
   const mc = Buffer.alloc(4);
   mc.writeUInt32LE(0, 0);
   chunks.push(mc);
 
   // Encode the root value
-  encodeValue(value, chunks);
+  const previous = startSharing();
+  try {
+    encodeValue(value, chunks);
+    finishSharing(mc, chunks);
+  } finally {
+    sharing = previous;
+  }
 
   return Buffer.concat(chunks);
 }
@@ -225,7 +338,12 @@ function encodeValue(value, chunks) {
   if (typeof value === "object" && value.type) {
     switch (value.type) {
       case "dict":
-        encodeDict(value.entries, chunks);
+        encodeDict(
+          value.entries,
+          chunks,
+          value.realValues === true,
+          value.integerKeys,
+        );
         return;
       case "wstring":
         encodeWString(value.value, chunks);
@@ -315,7 +433,14 @@ function encodeValue(value, chunks) {
         const mc2 = Buffer.alloc(4);
         mc2.writeUInt32LE(0, 0);
         innerChunks.push(mc2);
-        encodeValue(value.value, innerChunks);
+        // A stream of its own, with its own sharing (above, "A rowset's descriptor, written once").
+        const previous = startSharing();
+        try {
+          encodeValue(value.value, innerChunks);
+          finishSharing(mc2, innerChunks);
+        } finally {
+          sharing = previous;
+        }
         const innerBuf = Buffer.concat(innerChunks);
         putSizeEx(innerBuf.length, chunks);
         chunks.push(innerBuf);
@@ -330,11 +455,28 @@ function encodeValue(value, chunks) {
       }
       case "objectex1":
       case "objectex2": {
-        chunks.push(
-          Buffer.from([
-            value.type === "objectex1" ? Op.PyObjectEx1 : Op.PyObjectEx2,
-          ]),
-        );
+        // A row descriptor met again in this stream is a reference to its first writing, which is flagged shared
+        // then (above, "A rowset's descriptor, written once").
+        const shares = sharing !== null && isRowDescriptor(value);
+        const known = shares ? sharing.seen.get(value) : undefined;
+        if (known !== undefined) {
+          if (known.id === 0) {
+            known.id = sharing.shared.length + 1;
+            known.typeByte[0] |= SAVE_MASK;
+            sharing.shared.push(known);
+          }
+          chunks.push(Buffer.from([Op.PySavedStreamElement]));
+          putSizeEx(known.id, chunks);
+          return;
+        }
+        const typeByte = Buffer.from([
+          value.type === "objectex1" ? Op.PyObjectEx1 : Op.PyObjectEx2,
+        ]);
+        if (shares) {
+          sharing.seen.set(value, { id: 0, typeByte, order: sharing.order });
+          sharing.order += 1;
+        }
+        chunks.push(typeByte);
         encodeValue(value.header, chunks);
         // Encode list elements
         if (value.list) {
@@ -448,12 +590,30 @@ function encodeList(arr, chunks) {
   }
 }
 
-function encodeDict(entries, chunks) {
+// realValues: the dict's own values that are plain numbers are Python floats,
+// whole or not. A whole number left plain is sent as an integer, and Python 2
+// floors one integer divided by another; Tranquility's dogma attribute values
+// are floats whatever they hold. Only the dict's own values: its keys, and
+// anything inside a value, are sent as they are.
+//
+// integerKeys: the few of those values that are integers on Tranquility too (a
+// module's isOnline is the integer 1). The values under these keys are sent as
+// they are. It says nothing in a dict that is not marked realValues.
+function encodeDict(entries, chunks, realValues = false, integerKeys = null) {
+  const sentAsGiven =
+    realValues && Array.isArray(integerKeys) && integerKeys.length > 0
+      ? new Set(integerKeys)
+      : null;
   chunks.push(Buffer.from([Op.PyDict]));
   putSizeEx(entries.length, chunks);
   // EVE marshal writes VALUE first, then KEY (reversed from what you'd expect)
   for (const [key, val] of entries) {
-    encodeValue(val, chunks);
+    encodeValue(
+      realValues && typeof val === "number" && !(sentAsGiven && sentAsGiven.has(key))
+        ? { type: "real", value: val }
+        : val,
+      chunks,
+    );
     encodeValue(key, chunks);
   }
 }
@@ -611,8 +771,10 @@ function applyPackedRowVirtualFields(fields, rowHeader) {
     const resolver = normalizePackedVirtualResolver(column);
     if (resolver === "eve.common.script.sys.eveCfg.StackSize") {
       fields[columnName] = derivePackedStackSize(fields);
+      setDecodedNumberKind(fields, columnName, undefined);
     } else if (resolver === "eve.common.script.sys.eveCfg.Singleton") {
       fields[columnName] = derivePackedSingleton(fields);
+      setDecodedNumberKind(fields, columnName, undefined);
     }
   }
 }
@@ -743,24 +905,36 @@ function normalizePackedBoolean(value) {
 
 function encodePackedNumericValue(type, value) {
   switch (type) {
-    case DBTYPE.CY:
-    case DBTYPE.I8:
+    case DBTYPE.CY: {
+      // CCP PyRowSet.cpp:1223-1228 rounds to cents, then stores 1/10000 units.
+      // Keep double arithmetic and signed rounding; the buffer checks int64 range.
+      const amount = normalizePackedNumber(value, 0);
+      const scaled = Math.trunc(Math.floor(amount * 100.0 + 0.5) * 100.0);
+      const buf = Buffer.alloc(8);
+      buf.writeBigInt64LE(BigInt(scaled), 0);
+      return buf;
+    }
+    case DBTYPE.I8: {
+      const buf = Buffer.alloc(8);
+      buf.writeBigInt64LE(normalizePackedBigInt(value, 0n), 0);
+      return buf;
+    }
     case DBTYPE.UI8:
     case DBTYPE.FILETIME: {
       const buf = Buffer.alloc(8);
       const bigValue = normalizePackedBigInt(value, 0n);
-      buf.writeBigInt64LE(bigValue, 0);
+      // Installed DBRow::Set (blue.dll.original 0x1802fc460) and CCP
+      // PyRowSet.cpp:1214-1220 use the UNSIGNED 64-bit converter here.
+      buf.writeBigUInt64LE(bigValue, 0);
       return buf;
     }
     case DBTYPE.I4:
     case DBTYPE.UI4: {
       const buf = Buffer.alloc(4);
       const intValue = Math.trunc(normalizePackedNumber(value, 0));
-      if (type === DBTYPE.UI4) {
-        buf.writeUInt32LE(intValue >>> 0, 0);
-      } else {
-        buf.writeInt32LE(intValue, 0);
-      }
+      // Native DBRow::Set sends BOTH types through PyInt_AsLong: Windows
+      // signed32 range, with negative values preserving their stored bits.
+      buf.writeInt32LE(intValue, 0);
       return buf;
     }
     case DBTYPE.R4: {
@@ -927,14 +1101,19 @@ function coerceDecodedPackedInteger(value) {
 function decodePackedFixedValue(type, buffer, offset) {
   switch (type) {
     case DBTYPE.CY:
+      // CCP PyRowSet.cpp:1102-1103 returns a real currency amount.
+      return Number(buffer.readBigInt64LE(offset)) / 10000.0;
     case DBTYPE.I8:
+      return coerceDecodedPackedInteger(buffer.readBigInt64LE(offset));
     case DBTYPE.UI8:
     case DBTYPE.FILETIME:
-      return coerceDecodedPackedInteger(buffer.readBigInt64LE(offset));
+      // Installed getter 0x1802fc010 selects PyLong_FromUnsignedLongLong.
+      return coerceDecodedPackedInteger(buffer.readBigUInt64LE(offset));
     case DBTYPE.I4:
-      return buffer.readInt32LE(offset);
     case DBTYPE.UI4:
-      return buffer.readUInt32LE(offset);
+      // Both reach PyInt_FromLong in the installed Windows client. Its
+      // 32-bit C long interprets the high bit as signed, including UI4.
+      return buffer.readInt32LE(offset);
     case DBTYPE.R4:
       return buffer.readFloatLE(offset);
     case DBTYPE.R8:
@@ -1012,6 +1191,9 @@ function decodePackedRowFields(rowHeader, rleData, state) {
     values[entry.index] = isNull
       ? null
       : decodePackedFixedValue(entry.type, packedByteData, offset);
+    if (state.preserveNumberKinds && !isNull) {
+      setDecodedNumberKind(values, entry.index, packedNumberKinds.get(entry.type));
+    }
     offset += entry.size >> 3;
   }
 
@@ -1035,19 +1217,27 @@ function decodePackedRowFields(rowHeader, rleData, state) {
     values[entry.index] =
       boolByte < bitData.length &&
       (bitData[boolByte] & (1 << (boolBit & 0x7))) !== 0;
+    if (state.preserveNumberKinds) {
+      setDecodedNumberKind(values, entry.index, packedNumberKinds.get(entry.type));
+    }
   }
 
   for (const entry of sizeMap) {
     if (entry.size !== 0) {
       continue;
     }
-    values[entry.index] = decodeValue(state);
+    // STR/WSTR/BYTES/other object slots carry their actual child opcode, not
+    // a numeric class inferred from the descriptor's object type.
+    decodeInto(state, values, entry.index);
   }
 
   const fields = {};
   for (let index = 0; index < columns.length; index += 1) {
     const columnName = normalizePackedColumnName(columns[index][0], `col_${index}`);
     fields[columnName] = values[index];
+    if (state.preserveNumberKinds) {
+      setDecodedNumberKind(fields, columnName, getDecodedNumberKind(values, index));
+    }
   }
   applyPackedRowVirtualFields(fields, rowHeader);
 
@@ -1157,7 +1347,7 @@ function encodePackedRow(packedRow, chunks) {
  * The input should be the raw payload AFTER stripping the 4-byte length header,
  * starting with the 0x7E magic byte.
  */
-function decodeMarshalStream(buffer, requireExactEnd) {
+function decodeMarshalStream(buffer, requireExactEnd, options, onRootKind) {
   if (!Buffer.isBuffer(buffer)) {
     buffer = Buffer.from(buffer, "hex");
   }
@@ -1166,6 +1356,9 @@ function decodeMarshalStream(buffer, requireExactEnd) {
     buf: buffer,
     pos: 0,
     storedObjects: [],
+    preserveNumberKinds: options?.preserveNumberKinds === true,
+    storedNumberKinds: null,
+    lastNumberKind: undefined,
     saveIndicesPos: null,
     saveIndicesEnd: null,
   };
@@ -1191,6 +1384,9 @@ function decodeMarshalStream(buffer, requireExactEnd) {
       );
     }
     state.storedObjects = new Array(saveCount).fill(null);
+    if (state.preserveNumberKinds) {
+      state.storedNumberKinds = new Array(saveCount);
+    }
     state.saveIndicesPos = buffer.length - saveIndicesBytes;
     state.saveIndicesEnd = buffer.length;
     valueEnd = state.saveIndicesPos;
@@ -1210,15 +1406,18 @@ function decodeMarshalStream(buffer, requireExactEnd) {
       throw new Error("Marshal stream has unconsumed save-table entries");
     }
   }
+  // Private nested-stream seam: public root primitives stay plain values,
+  // while a substream's containing `value` field can retain its root kind.
+  if (onRootKind) onRootKind(state.lastNumberKind);
   return value;
 }
 
-function marshalDecode(buffer) {
-  return decodeMarshalStream(buffer, false);
+function marshalDecode(buffer, options) {
+  return decodeMarshalStream(buffer, false, options);
 }
 
-function marshalDecodeExact(buffer) {
-  return decodeMarshalStream(buffer, true);
+function marshalDecodeExact(buffer, options) {
+  return decodeMarshalStream(buffer, true, options);
 }
 
 function readUInt8(state) {
@@ -1298,11 +1497,11 @@ function readSaveIndex(state) {
 
 function cloneDecodedValue(value) {
   if (Buffer.isBuffer(value)) {
-    return Buffer.from(value);
+    return copyDecodedNumberKinds(value, Buffer.from(value));
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => cloneDecodedValue(entry));
+    return copyDecodedNumberKinds(value, value.map((entry) => cloneDecodedValue(entry)));
   }
 
   if (value && typeof value === "object") {
@@ -1310,7 +1509,7 @@ function cloneDecodedValue(value) {
     for (const [key, entryValue] of Object.entries(value)) {
       cloned[key] = cloneDecodedValue(entryValue);
     }
-    return cloned;
+    return copyDecodedNumberKinds(value, cloned);
   }
 
   return value;
@@ -1420,6 +1619,7 @@ function decodeValue(state) {
   const storageIndex = flagSave ? readSaveIndex(state) : 0;
 
   let result;
+  let numberKind = state.preserveNumberKinds ? opcodeNumberKinds.get(op) : undefined;
 
   switch (op) {
     case Op.PyNone:
@@ -1567,18 +1767,21 @@ function decodeValue(state) {
       break;
 
     case Op.PyOneTuple:
-      result = [decodeValue(state)];
+      result = [];
+      decodeInto(state, result, 0);
       break;
 
     case Op.PyTwoTuple:
-      result = [decodeValue(state), decodeValue(state)];
+      result = [];
+      decodeInto(state, result, 0);
+      decodeInto(state, result, 1);
       break;
 
     case Op.PyTuple: {
       const count = readSizeEx(state);
       const arr = [];
       for (let i = 0; i < count; i++) {
-        arr.push(decodeValue(state));
+        decodeInto(state, arr, i);
       }
       result = arr;
       break;
@@ -1589,14 +1792,15 @@ function decodeValue(state) {
       break;
 
     case Op.PyOneList:
-      result = { type: "list", items: [decodeValue(state)] };
+      result = { type: "list", items: [] };
+      decodeInto(state, result.items, 0);
       break;
 
     case Op.PyList: {
       const count = readSizeEx(state);
       const items = [];
       for (let i = 0; i < count; i++) {
-        items.push(decodeValue(state));
+        decodeInto(state, items, i);
       }
       result = { type: "list", items };
       break;
@@ -1607,24 +1811,26 @@ function decodeValue(state) {
       const entries = [];
       // Marshal writes value first, then key
       for (let i = 0; i < count; i++) {
-        const val = decodeValue(state);
-        const key = decodeValue(state);
-        entries.push([key, val]);
+        const pair = [];
+        decodeInto(state, pair, 1);
+        decodeInto(state, pair, 0);
+        entries.push(pair);
       }
       result = { type: "dict", entries };
       break;
     }
 
     case Op.PyObject: {
-      const name = decodeValue(state);
-      const args = decodeValue(state);
-      result = { type: "object", name, args };
+      result = { type: "object" };
+      decodeInto(state, result, "name");
+      decodeInto(state, result, "args");
       break;
     }
 
     case Op.PyObjectEx1:
     case Op.PyObjectEx2: {
       const header = decodeValue(state);
+      const headerKind = state.lastNumberKind;
       const list = [];
       while (state.pos < state.buf.length) {
         const peek = state.buf[state.pos] & OPCODE_MASK;
@@ -1632,7 +1838,7 @@ function decodeValue(state) {
           state.pos++;
           break;
         }
-        list.push(decodeValue(state));
+        decodeInto(state, list, list.length);
       }
       const dict = [];
       while (state.pos < state.buf.length) {
@@ -1641,9 +1847,10 @@ function decodeValue(state) {
           state.pos++;
           break;
         }
-        const key = decodeValue(state);
-        const val = decodeValue(state);
-        dict.push([key, val]);
+        const pair = [];
+        decodeInto(state, pair, 0);
+        decodeInto(state, pair, 1);
+        dict.push(pair);
       }
       result = {
         type: op === Op.PyObjectEx1 ? "objectex1" : "objectex2",
@@ -1651,11 +1858,13 @@ function decodeValue(state) {
         list,
         dict,
       };
+      if (state.preserveNumberKinds) setDecodedNumberKind(result, "header", headerKind);
       break;
     }
 
     case Op.PySubStruct:
-      result = { type: "substruct", value: decodeValue(state) };
+      result = { type: "substruct" };
+      decodeInto(state, result, "value");
       break;
 
     case Op.PySubStream: {
@@ -1663,7 +1872,12 @@ function decodeValue(state) {
       const data = readBytes(state, len);
       // Try to decode the substream
       try {
-        result = { type: "substream", value: marshalDecode(data) };
+        let rootKind;
+        const value = decodeMarshalStream(data, false, {
+          preserveNumberKinds: state.preserveNumberKinds,
+        }, state.preserveNumberKinds ? (kind) => { rootKind = kind; } : undefined);
+        result = { type: "substream", value };
+        if (state.preserveNumberKinds) setDecodedNumberKind(result, "value", rootKind);
       } catch (e) {
         result = { type: "substream", raw: data };
       }
@@ -1674,6 +1888,7 @@ function decodeValue(state) {
       const checksum = readUInt32LE(state);
       const value = decodeValue(state);
       result = { type: "checksummed", checksum, value };
+      if (state.preserveNumberKinds) setDecodedNumberKind(result, "value", state.lastNumberKind);
       break;
     }
 
@@ -1700,6 +1915,7 @@ function decodeValue(state) {
         index <= state.storedObjects.length
       ) {
         result = cloneDecodedValue(state.storedObjects[index - 1]);
+        numberKind = state.storedNumberKinds?.[index - 1];
       } else {
         result = null;
       }
@@ -1734,9 +1950,11 @@ function decodeValue(state) {
   if (flagSave && state.storedObjects) {
     if (storageIndex > 0 && storageIndex <= state.storedObjects.length) {
       state.storedObjects[storageIndex - 1] = result;
+      if (state.preserveNumberKinds) state.storedNumberKinds[storageIndex - 1] = numberKind;
     }
   }
 
+  if (state.preserveNumberKinds) state.lastNumberKind = numberKind;
   return result;
 }
 
@@ -1803,6 +2021,7 @@ module.exports = {
   marshalEncode,
   marshalDecode,
   marshalDecodeExact,
+  getDecodedNumberKind,
   wrapPacket,
   encodePacket,
   dictGet,

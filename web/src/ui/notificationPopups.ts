@@ -18,9 +18,9 @@
 // NoticeBridge.
 //
 // A click on one does what the client's does (notificationCenter.GetNotificationAction and OnEntryClick, 304 to
-// 410): a new mail's opens the mail (mailSvc.OnOpenPopupMail); any other's opens the mail window's notifications on
-// its type's group and selects it (MailInteractor.SelectByNotificationID), which every type the page sees takes, the
-// client's own cases being for types it does not (contracts, kill reports, applications, ...).
+// 410): a new mail opens the mail (mailSvc.OnOpenPopupMail); corporation recipient
+// types139/18/17/142 open MY_APPLICATIONS (356-362). Other implemented types open
+// the mail window's notifications on their group (MailInteractor.SelectByNotificationID).
 
 import { notificationTitle } from "../bridge/activity.ts";
 import { plainText } from "../bridge/clientWords.ts";
@@ -33,6 +33,7 @@ import type { ClientStore } from "../store/clientStore.ts";
 import { resolvedName, type NameRef } from "../store/names.ts";
 import type { LiveNotification } from "../store/types.ts";
 import { focusMail } from "./mailFocus.ts";
+import { corporationApplicationNotification } from "../bridge/corporationApplications.ts";
 import { notify, type NoticeInput } from "./notices.ts";
 import type { TabID } from "./tabs.ts";
 
@@ -119,6 +120,12 @@ export function watchNotificationPopups(store: ClientStore, flow: AppFlow, open:
       data: (args[4] ?? null) as JsonValue | null,
     };
     const action = () => {
+      if (corporationApplicationNotification(typeID)) {
+        if (store.station.get().online?.characterID !== notification.receiverID) return;
+        flow.requestCorporationApplications();
+        open("corporation");
+        return;
+      }
       open("mail");
       focusMail({ kind: "notification", notificationID, typeID });
     };

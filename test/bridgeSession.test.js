@@ -4294,7 +4294,7 @@ test("a pilot's bookmarks go by the generic call as a pilot's read, as it was se
 // the registry whatever is asked, a member's where one is named and several members' where several are, each
 // settled by itself.
 
-test("a corporation's members go by the generic call as a pilot's read, as it was sent; what changes a member is its route's alone", async () => {
+test("an explicit corporation owner read is forwarded; unexposed administration writes remain refused", async () => {
   const gateway = fakeGateway();
   const { baseUrl } = await startTestServer({ gateway });
   await apiRequest(baseUrl, "/api/bridge/select", { method: "POST", body: { characterID: 7 } });
@@ -4304,7 +4304,11 @@ test("a corporation's members go by the generic call as a pilot's read, as it wa
   const sent = gateway.calls.call.at(-1);
   assert.deepEqual([sent.service, sent.method, sent.args, sent.kwargs, sent.bridgeSessionID, sent.sessionFields], ["corpRegistry", "GetEveOwners", [], null, BRIDGE_SESSION_ID, { userid: 4 }]);
   assert.equal(gateway.calls.call.length, before + 1);
-  for (const method of ["UpdateMember", "UpdateMembers", "KickOutMember", "KickOutMembers", "ExecuteActions", "ResignFromCEO"]) {
+  // Native bco_members.UpdateMember243 and base_corporation's KickOut397-412,
+  // KickOutMultipleMembers459-476 and __ResignFromCEO780-783 have page primitives.
+  // The kick/CEO mutations name their originating registry with `of`;
+  // other administration writes stay private.
+  for (const method of ["UpdateMembers", "ExecuteActions"]) {
     const refused = await apiRequest(baseUrl, "/api/bridge/call", { method: "POST", body: { service: "corpRegistry", method, args: [7], kwargs: null, pilot: true, confirm: true } });
     assert.deepEqual([refused.response.status, refused.payload.error], [403, "BRIDGE_WRITE_REFUSED"], method);
   }

@@ -51,6 +51,8 @@ const { NO_OPTIONAL_MATERIAL } = require("../../web/src/bridge/industryReckoning
 
 /** A Python list, from a JS array (which would go out as a tuple) or from one already wrapped. */
 const list = (value) => (Array.isArray(value) ? { type: "list", items: value } : value);
+// Compiled MedalRibbonPickerWindow.SubmitData553-560 builds nested lists.
+const medalGraphics = (value) => Array.isArray(value) ? list(value.map(list)) : value?.type === "list" && Array.isArray(value.items) ? { ...value, items: value.items.map(list) } : value;
 
 /**
  * A market order's ID as the client has it: a number, off the order's row. The BFF's routes have it as the text the
@@ -488,13 +490,16 @@ const FLAG_HANGAR = 4;
 const FLAG_CARGO = 5;
 /**
  * Is an Add the fitting's own unfitting of a module (fittingSlotController.UnfitModule, 238 and 241): a thing in a
- * slot of the pilot's ship, moved out of that ship to the hangar with no quantity named, or to the ship's own hold
- * with a quantity of None.
+ * slot of the pilot's ship. UnloadModuleToContainer1077-1104 also names qty=None
+ * with any destination flag, or omits both kwargs for a flagless container such
+ * as Trade. Preserve those forms as well as UnfitModule's hangar/cargo forms.
  */
 const unfitsAModule = (args, kwargs, context) => {
   if (!context || typeof context.slotOf !== "function" || args.length !== 2 || args[1] !== context.shipID) return false;
   if (context.slotOf(args[0]) === null) return false;
-  return kwargs.flag === FLAG_HANGAR ? !Object.hasOwn(kwargs, "qty") : kwargs.flag === FLAG_CARGO && kwargs.qty === null;
+  return !Object.hasOwn(kwargs, "qty")
+    ? kwargs.flag === FLAG_HANGAR || !Object.hasOwn(kwargs, "flag")
+    : kwargs.qty === null && Object.hasOwn(kwargs, "flag");
 };
 const reshaped = (source, shape, note) => Object.freeze({ status: "reshaped", source, shape, note });
 const differs = (source, note) => Object.freeze({ status: "differs", source, note });
@@ -637,6 +642,14 @@ const TRANSPORT_OWN_CALLS = Object.freeze([
  * (importExportUI.py 549), and the gateway never had it.
  */
 const GAME_PORT_ONLY_CALLS = Object.freeze([
+  "invCache.FetchItem",
+  "invCache.InvalidateLocationCache",
+  "invbroker.EnterPassword",
+  "invbroker.GetPriceForItems",
+  "invbroker.GetSelfInvItem",
+  "itemLocking.GetItemsByLocation",
+  // A server-returned direct-trade Moniker; the page binds it lazily with List.
+  "trademgr.InitiateTrade", "trademgr.MachoBindObject", "trademgr.List", "trademgr.Abort", "trademgr.Add", "trademgr.MultiAdd", "trademgr.OfferMoney", "trademgr.MakeOffer",
   // xmppchatsvc.py 1197-1208 / 1257-1261: private allocation and elevated addition, both on the proxy.
   "XmppChatMgr.CreatePrivateChannel", "XmppChatMgr.AddCharacterToChannel",
   "charMgr.GetPrivateInfo",
@@ -761,6 +774,8 @@ const GAME_PORT_ONLY_CALLS = Object.freeze([
   // A pilot's employment record and character transfers, which the client's History panel's employment tab asks
   // (infosvc.py 2842). The gateway's list has nothing of the corporation service's.
   "corporationSvc.GetEmployementRecordAndCharacterTransfers",
+  // medals.py60/64/87/89/108: catalogue, recipients, received medals, details and awards on RemoteSvc.
+  "corporationSvc.GetAllCorpMedals", "corporationSvc.GetRecipientsOfMedal", "corporationSvc.GetMedalDetails", "corporationSvc.GetMedalsReceived", "corporationSvc.CreateMedal", "corporationSvc.GiveMedalToCharacters",
   // A folder of the mail window marked read, trashed, and the trash restored (evemail.py StaticMenu). The gateway's
   // list has the mail manager's others, not these.
   "mailMgr.MarkAsReadByLabel", "mailMgr.MoveToTrashByLabel", "mailMgr.MoveAllFromTrash",
@@ -1857,9 +1872,9 @@ function loading(args, kwargs, context) {
 }
 
 /**
- * clientDogmaLocation.UnloadAmmoFromModules and UnloadAmmoToContainer. With no
- * quantity the client sends the modules as a list; with one it names a single
- * module, the one the charge is in. The ship is the one the session is flying.
+ * clientDogmaLocation.UnloadAmmoFromModules sends a list; the module-container
+ * path sends one scalar module with three arguments. UnloadAmmoToContainer
+ * names one module and a fourth quantity (including None).
  */
 function unloading(args, kwargs, context) {
   const [shipID, modules, destination, quantity] = args;
@@ -1867,7 +1882,7 @@ function unloading(args, kwargs, context) {
   // Three: UnloadAmmoFromModules (1136), the modules a list; UnloadModuleToContainer (1095, 1097), one module and the
   // container, as Tranquility recorded it (UnloadAmmo(ship, module, ship)). Four: UnloadAmmoToContainer (1127), one
   // module, where, and the quantity, None where none is named, which goes as None.
-  if (args.length < 4) return { args: [shipID, list(modules), destination], kwargs, ...whose };
+  if (args.length < 4) return { args: [shipID, Array.isArray(modules) || modules?.type === "list" ? list(modules) : modules, destination], kwargs, ...whose };
   const several = Array.isArray(modules) ? modules : modules && Array.isArray(modules.items) ? modules.items : null;
   if (several === null) return { args: [shipID, modules, destination, quantity], kwargs, ...whose };
   if (several.length === 1) return { args: [shipID, several[0], destination, quantity], kwargs, ...whose };
@@ -1999,17 +2014,32 @@ const RETAIL_CALLS = Object.freeze({
   "allianceFittingMgr.GetFittings": reshaped(`${FITTING_SVC}:430`, fittingsOf("allianceID", "alliance"), "GetFittingMgr(session.allianceid).GetFittings(session.allianceid), and only for a pilot in an alliance"),
 
   // ── an inventory (a bound invbroker object) ───────────────────────────────
+  "invCache.InvalidateLocationCache": {
+    status: "local",
+    source: `${INV_CACHE}:596-605`,
+    note: "CLIENT-LOCAL: retire only the exact published inventory key and its mapped handles. No native server RPC, manager/session reset or broker-lock reset. Numeric station IDs do not alias containerHangar; pending-only binds remain. Retained Python old-guard behavior is outside the semantic-address API.",
+  },
+  "invCache.FetchItem": {
+    status: "local",
+    source: `${INV_CACHE}:693-702`,
+    note: "CLIENT-LOCAL: numeric item from exactly one retained source inventory. NPC station sources map to containerHangar; other numeric sources stay exact. Missing guard/row returns None, with no bind/List/GetAllInfo RPC. Tuple charge source lookup and dynamic dogma fitting indices remain separate prerequisites.",
+  },
+  "invbroker.EnterPassword": typing(same(`${INV_CACHE}:1442-1477`, "PasswordHandlerCallWrapper sends EnterPassword(passwordType, scalar text from NamePopup) on the SAME underlying bound inventory; type1 is general, type2 configuration. The return is ignored before retrying the original operation. Nonempty edit text is Unicode. No Tranquility capture established."), [1]),
+  "invbroker.GetSelfInvItem": judged(`${INV_CACHE}:966-975`, sentWithNothing, "invCacheContainer.GetItem reads its inventory's GetSelfInvItem(), as DogmaLocation.UnloadModuleToContainer1087-1088 requires before unloading to a Trade inventory."),
+  "itemLocking.GetItemsByLocation": same("eve/client/script/ui/services/corporation/itemLocking.py:30-34,57-64", "GetItemsByLocation(current station or docked structure), cached per location until OnLockedItemChange. invCacheContainer.MultiAdd1044 checks every ordinary item ID before acquiring a local broker lock."),
+  "invbroker.GetPriceForItems": reshaped(`${INV_CACHE}:769`, (args, kwargs) => ({ args: [list(args[0] ?? [])], kwargs }), "Asset Safety wrap GetPriceForItems([itemIDs]), before the recovery question and quantity popup."),
+  "structureAssetSafety.GetWrapNames": reshaped("eve/client/script/ui/shared/assets/assetSafetySvc.py:79", (args, kwargs) => ({ args: [list(args[0] ?? [])], kwargs }), "GetWrapNames(wrapIDs), a list of all requested wraps when any name is uncached."),
   "invbroker.GetAvailableTurretSlots": judged("achievements/client/eventHandler.py:427", sentWithNothing, "invCache.GetInventoryFromId(shipID).GetAvailableTurretSlots(), nothing sent, on the ship's own inventory: how many of its turret hardpoints are free. The achievements' event handler asks it at every change of the session's ship to a ship (251 to 260, 419 to 429: godma's item of the ship first, and only for one of the ship category) and when what is fitted high changes (inventorysvc.py 124). Tranquility's recordings have it in 20: at a login, an ejection, a boarding."),
   "invbroker.List": reshaped(
     `${INV_CACHE}:1138`,
-    // self.moniker.List(flag=flag): the flag is always a keyword, None when there is none.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: kwargs.flag !== undefined ? kwargs.flag : args[0] ?? null } }),
+    // Local List1131-1138: the first positional flag wins, even 0/None. Keep local filters until listedRead consumes them.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flag: args.length > 0 ? args[0] : kwargs.flag ?? null } }),
     "List(flag=flag)",
   ),
   "invbroker.ListByFlags": reshaped(
     `${INV_CACHE}:1174`,
-    // self.moniker.ListByFlags(flags=uncachedFlags): a keyword, and a list.
-    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(kwargs.flags !== undefined ? kwargs.flags : args[0] ?? []) } }),
+    // Local ListByFlags1167: positional flagIDs wins; listedRead sends only the uncached flags remotely.
+    (args, kwargs) => ({ args: [], kwargs: { ...kwargs, flags: list(args.length > 0 ? args[0] ?? [] : kwargs.flags ?? []) } }),
     "ListByFlags(flags=[...])",
   ),
   "invbroker.GetCapacity": webOnly(
@@ -2090,7 +2120,9 @@ const RETAIL_CALLS = Object.freeze({
     // (fittingSlotController.UnfitModule): docked, of the hangar's inventory with no qty at all (238:
     // Add(moduleID, shipID, flag=const.flagHangar)), and in space, of the ship's own with a qty of None (241:
     // Add(moduleID, shipID, qty=None, flag=const.flagCargo)). A call of either form, of a thing a listing has in a
-    // slot of the pilot's ship, goes as it is said.
+    // slot of the pilot's ship, goes as it is said. DogmaLocation1077-1104
+    // additionally omits both kwargs for a flagless destination such as Trade,
+    // and names qty=None with other destination flags.
     (args, kwargs, context) => {
       if (kwargs.qty !== undefined && kwargs.qty !== null) return { status: "same" };
       if (unfitsAModule(args, kwargs, context)) return { status: "same" };
@@ -2525,6 +2557,15 @@ const RETAIL_CALLS = Object.freeze({
     shape: ownersContracts,
   }),
   "crimewatch.GetClientStates": same(`${CRIMEWATCH_SVC}:89`, "CharGetCrimewatchLocation().GetClientStates(), no arguments, on a moniker made for the call. Recorded on Tranquility as the call a bind of crimewatch carried."),
+  "trademgr.Add": same("eve/client/script/environment/invControllers.py:193-226", "PlayerTrade inherits locationFlag=None: Add(itemID, sourceLocationID, qty=quantity, flag=None). Compiled cdx2995 confirms the keyword values."),
+  "trademgr.MultiAdd": reshaped("eve/client/script/environment/invControllers.py:489", ([ids, source], kwargs) => ({ args: [list(ids), source], kwargs }), "BaseInvContainer.AddItems sorts by type volume times stacksize, then MultiAdd(list IDs, sourceLocation, flag=flagNone0). Compiled cdx2995 confirms list/order/flag."),
+  "trademgr.OfferMoney": reshaped("eve/client/script/ui/station/pvptrade/pvptradewnd.py:160-164", ([amount], kwargs) => ({ args: [asFloat(amount)], kwargs }), "QtyPopup returns a two-decimal float; OfferMoney(qty) on the trade object. No money offer in the TQ corpus."),
+  "trademgr.MakeOffer": reshaped("eve/client/script/ui/station/pvptrade/pvptradewnd.py:92-115", ([manifest], kwargs) => ({ args: [manifest && manifest.type === undefined ? keyVal(constructorKeywordOrder(["tradeContainerID", "money", "tradeItems"]).map(name => [name, name === "money" ? list(manifest[name]) : manifest[name]])) : manifest], kwargs }), "KeyVal(tradeContainerID, money list in trader order, tradeItems Python set of both sides' DBRows), after the native other-party ship warning. TQ968 exposes manifest/None offer state; its packet is LARGE PAYLOAD."),
+  "trademgr.InitiateTrade": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:38-41", "RemoteSvc InitiateTrade(charID) returns the trade Moniker. Its node/params are retained unchanged; no location-derived moniker is invented."),
+  "trademgr.List": same("eve/client/script/ui/station/pvptrade/pvptradesvc.py:28-51", "List() on the returned or notified trade Moniker, first carried by its lazy bind. TQ In station trade41-48 records the receiver path and inline Row."),
+  "trademgr.Abort": same("eve/client/script/ui/station/pvptrade/pvptradewnd.py:67-89", "Abort() on that same trade object after confirmed Cancel or during close, including after completion. TQ In station trade1268/1432 records close-time Abort -> True."),
+  "crimewatch.StartDuelChallenge": same(`${CRIMEWATCH_SVC}:583-588`, "CharGetCrimewatchLocation().StartDuelChallenge(charID), after the local engagement guard; one selected other player, high/low security. No exact TQ call recording found."),
+  "crimewatch.RespondToDuelChallenge": same(`${CRIMEWATCH_SVC}:562-579`, "RespondToDuelChallenge(fromCharID, expiryTime, accept): exact notice FILETIME long and bool, only after an explicit accept/decline result; timeout/close sends nothing."),
   "crimewatch.SetSafetyLevel": judged(`${CRIMEWATCH_SVC}:343`, oneSafetyLevel,
     "CharGetCrimewatchLocation().SetSafetyLevel(safetyLevel): one of the three levels, from the safety button's selector, at once for a level no lower than the one now and after its Confirm for a lower one (shipSafetyButton.py 464, 660). The service keeps the level it set and asks nothing. In none of the recordings."),
   "crimewatch.GetMySecurityStatus": same(`${CRIMEWATCH_SVC}:592`, "CharGetCrimewatchLocation().GetMySecurityStatus(), no arguments: asked once and kept. Recorded on Tranquility as the call a bind of crimewatch carried."),
@@ -2707,7 +2748,12 @@ const RETAIL_CALLS = Object.freeze({
   "calendarProxy.GetEventDetails": judged(`${CALENDAR_SVC}:261`, ofAnOpenedEvent, "GetCalendarProxy().GetEventDetails(eventID, ownerID), kept by event"),
   "calendarMgr.GetResponsesForCharacter": same(`${CALENDAR_SVC}:252`, "RemoteSvc('calendarMgr').GetResponsesForCharacter(), no arguments, asked once and kept"),
   "calendarMgr.GetResponsesToEvent": judged(`${CALENDAR_SVC}:415`, ofAnOpenedEvent, "RemoteSvc('calendarMgr').GetResponsesToEvent(eventID, ownerID)"),
-  "account.GetCashBalance": same(`${WALLET_SVC}:41`, "RemoteSvc('account').GetCashBalance(0): nought for the pilot's own wallet"),
+  "account.GetCashBalance": same(`${WALLET_SVC}:41,156-170`, "GetCashBalance(0) for personal wealth; corporate GetCorpWealth sends (1, accountKey=None/explicit key) freshly, separately from its one-minute per-key cache"),
+  "account.GiveCashFromCorpAccount": Object.freeze({
+    status: "same", source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:150",
+    note: "Corporate-source transfer: character, float amount, captured source key; destination None and original edit reason by keyword. TQ Corp Transfers1804 has this three-argument/keyword shape and None reply.",
+    shape: (args, kwargs) => ({ args: [args[0], asFloat(args[1]), args[2]], kwargs: { ...kwargs, reason: typedText(kwargs.reason) }, status: "reshaped" }),
+  }),
   "account.GiveCash": typing(Object.freeze({
     status: "same",
     source: "eve/client/script/ui/shared/neocom/wallet/transferMoneyWnd.py:148",
@@ -2754,10 +2800,19 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.RegisterNewAggressionSettings": same("eve/client/script/ui/shared/neocom/corporation/corp_ui_home.py:634", "GetCorpRegistry().RegisterNewAggressionSettings(not isFFEnabled): the one bool, on the corporation's moniker. What it answers is for the window that asked: the settings the client keeps change by the server's notice"),
   "corpRegistry.GetMemberTrackingInfo": same(`${CORP_SVC}/base_corporation.py:865`, "GetCorpRegistry().GetMemberTrackingInfo(), no arguments, for a Director. Recorded bound in Archive/Opening all corp admin panels and assets search.txt:1033; cached for five minutes."),
   "corpRegistry.GetMemberTrackingInfoSimple": same(`${CORP_SVC}/base_corporation.py:867`, "GetCorpRegistry().GetMemberTrackingInfoSimple(), no arguments, for other members. CorpMemberTracking.ShowMemberTracking asks again as filters change."),
+  "corpRegistry.GetMemberIDsByQuery": same(`${CORP_SVC}/base_corporation.py:492`, "CorpQueryMembersForm.ExecuteQuery276-293 forwards the native criteria list and includeImplied/searchTitles booleans on the corporation moniker. The first term has three fields; joined terms have four. TQ admin panels2673-2674 records empty list/False/False -> empty list."),
+  "corpRegistry.SetAccountKey": same(`${CORP_SVC}/bco_members.py:249`, "One unchanged wallet account key on the corporation moniker. base_corporation.SetAccountKey165 uses PerformSessionChange with violateSafetyTimer=True. TQ Receiving Corp Roles1899/1918/2107 records key1000, corpAccountKey notification and True reply."),
   "corpRegistry.GetMember": same(`${CORP_SVC}/bco_members.py:168`, "GetCorpRegistry().GetMember(charID), positional on the corporation moniker. EditMemberDialog reads the viewer's grantable state and the target member."),
   "corpRegistry.MoveCompanyShares": same(`${CORP_SVC}/bco_shares.py:43`, "Compiled EditMemberDialog.OnGiveShares526 uses QtyPopup(2147483647,1,'1',HowManySharesToGive(player=charID),GiveShares), then MoveCompanyShares(session.corpid,charID,qty); Cancel sends nothing, no role gate or profile Apply. Wallet GiveSharesDialog.TransferShares104 passes the holding's issuerID as first argument; CorpSharesPanel.GetOwnerID supplies session.corpid as owner. Both send three unchanged positional arguments on the current corporation moniker; no TQ transfer recording found."),
   "charMgr.GetPrivateInfo": same("eve/client/script/ui/shared/neocom/corporation/corp_dlg_edit_member.py:148", "RemoteSvc('charMgr').GetPrivateInfo(charID), the one positional character ID, when Member Details loads the character."),
   "corpRegistry.UpdateMember": same(`${CORP_SVC}/bco_members.py:243`, "UpdateMember(charID,title,divisionID,squadronID,roles,grantableRoles,rolesAtHQ,grantableRolesAtHQ,rolesAtBase,grantableRolesAtBase,rolesAtOther,grantableRolesAtOther,baseID,titleMask,blockRoles), all 15 positional. Member Details General preserves role masks, titleMask=None, blockRoles=None; typed title Unicode."),
+  "corpRegistry.KickOutMembers": reshaped(`${CORP_SVC}/base_corporation.py:469`, ownersListed, "Compiled KickOutMultipleMembers forwards the merged Python list of character IDs as one argument. Preserve list type on the native wire; a JS array alone would marshal as a tuple. The originating registry and result handling are unchanged. No exact plural-expulsion recording was found."),
+  "corporationSvc.GetAllCorpMedals": same("eve/client/script/ui/services/medals.py:60", "RemoteSvc('corporationSvc').GetAllCorpMedals(corpID), catalogue and graphics rowsets; recorded as a cached object in Archive/Opening all corp admin panels and assets search.txt:1242-1261."),
+  "corporationSvc.GetRecipientsOfMedal": same("eve/client/script/ui/services/medals.py:64", "RemoteSvc('corporationSvc').GetRecipientsOfMedal(medalID), lazily from corp_ui_member_decorations.GetMedalSubContent112-149; repeated recepientID rows form one awardee entry."),
+  "corporationSvc.GetMedalDetails": same("eve/client/script/ui/services/medals.py:89", "RemoteSvc('corporationSvc').GetMedalDetails(medalID); infoContentBase1450-1453 and675-687 read info[0] separately for caption/description and corporation/count header."),
+  "corporationSvc.GetMedalsReceived": same("eve/client/script/ui/services/medals.py:87", "GetMedalsReceived(characterID), received medal and graphics rowsets, invalidated by OnMedalIssued/OnMedalStatusChanged."),
+  "corporationSvc.CreateMedal": typing(reshaped("eve/client/script/ui/services/medals.py:31-53", ([title, description, graphics, ...rest], kwargs) => ({ args: [title, description, medalGraphics(graphics), ...rest], kwargs }), "Unicode title/description and nested Python graphics lists from MedalRibbonPickerWindow.SubmitData553-560. Initial three arguments; fourth True only after ConfirmCreatingMedal and Yes. No recorded TQ fee or confirmation policy."), [0, 1]),
+  "corporationSvc.GiveMedalToCharacters": typing(reshaped("eve/client/script/ui/services/medals.py:108", ([medalID, recipients, ...rest], kwargs) => ({ args: [medalID, list(recipients), ...rest], kwargs }), "Scalar medal ID, Python list of recipients, Unicode reason; fourth True only after a ConfirmGivingMedal* refusal and Yes. Top-level RemoteSvc, not the corporation moniker. No TQ award capture found."), [2]),
   "facWarMgr.GetCorporationWarFactionID": same("eve/client/script/ui/services/facWarSvc.py:92", "facWarMgr.GetCorporationWarFactionID(corpID), for a player corporation. CorpMemberTracking.ShowMemberTracking asks after its tracking rows; the recorded director panel takes a cached result of 0."),
   "bannedwords.check_search_words_allowed": typing(same("bannedwords/client/bannedwords_client.py:80", "RemoteSvc('bannedwords').check_search_words_allowed(text), positional Unicode from the character edit (baseSingleLineEdit.Insert 641). Only where the held global config enables banned_words_search_enabled; member tracking asks after its rows and before its faction read."), [0]),
   "corpRegistry.GetLabels": same(`${CORP_SVC}/base_corporation.py:1011`, "GetCorpRegistry().GetLabels(), no arguments; the corporation contact labels, read on first showing the form."),
@@ -2774,6 +2829,9 @@ const RETAIL_CALLS = Object.freeze({
   "corpRegistry.GetEveOwners": judged(`${CORP_SVC}/bco_members.py:136`, sentWithNothing,
     "eveowners = self.GetCorpRegistry().GetEveOwners(), with nothing, on the corporation's moniker: recorded on Tranquility so. Asked when the session's corporation changes, for its members' names and their numbers, which the client keeps and changes as the server says a member changed (OnCorporationMemberChanged); a pilot is a member to the client where its number is among them (161). The native transport retains those IDs from the login/session prime for the page's atomic membership read. An explicit raw GetEveOwners RPC still asks the registry."),
   "corpRegistry.GetMyApplications": same(`${CORP_SVC}/bco_applications.py:72`, "GetCorpRegistry().GetMyApplications(), no arguments, on the corporation's moniker: asked once by the client, which keeps the list and works it over at each OnCorporationApplicationChanged"),
+  "corpRegistry.GetMyOldApplications": same(`${CORP_SVC}/bco_applications.py:98`, "Personal history, no arguments on the current corporation moniker; requested each time, only when the retained showingOld setting is True."),
+  "corpRegistry.InsertInvitation": same(`${CORP_SVC}/base_corporation.py:1145`, "InviteToJoinCorp asks ConfirmSendInviteToJoinCorp(charID), OK/Cancel; only OK sends the single positional character ID on the current registry. No exact TQ direct-invitation packet was found."),
+  "corpRegistry.UpdateApplicationOffer": same(`${CORP_SVC}/bco_applications.py:141`, "TempLock UpdateApplicationOffer; seven positional args: applicationID, characterID, target corporationID, original typed applicationText, status, empty byte customMessage, None date. Archive/Applying and accepting a corp invite.txt1324 confirms Unicode text/status2/empty/None. No session-change cooldown."),
   "corpRegistry.GetCorporation": same(`${CORP_SVC}/bco_corporations.py:49`, "GetCorpRegistry().GetCorporation(), no arguments, on the corporation's moniker"),
   "corpRegistry.GetSharesByShareholder": same(`${CORP_SVC}/bco_shares.py:30`, "GetCorpRegistry().GetSharesByShareholder(corpShares) on the corporation's moniker: the wallet's Shares tab asks it each time it is chosen with IsCorpWallet(), False for the pilot's own (sharesPanel.py GetScrollList), and the client indexes the rows by corporationID"),
   "officeManager.GetCorporationsWithOffices": judged(`${CORP_SVC}/officeManager.py:34`, sentWithNothing, "Moniker('officeManager', stationID).GetCorporationsWithOffices(), no arguments, while it has none for where the session is docked; let go at any OnOfficeRentalChange (71) and out of the station or structure (58, 66); the transport keeps it so (pilots.js, stationOffices). Recorded on Tranquility after an office was rented and after one was given up."),

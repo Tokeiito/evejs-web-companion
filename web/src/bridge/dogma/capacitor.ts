@@ -20,6 +20,7 @@
 // seconds (const.SEC).
 
 import type { DogmaItem, DogmaLocation } from "./location.ts";
+import { pyRound as roundFloat } from "../pyNumbers.ts";
 
 /** const.HOUR, const.SEC (100ns ticks), dogma/const.py dgmTauConstant (ms to ticks). */
 const HOUR = 36_000_000_000;
@@ -69,10 +70,11 @@ function long(value: number): number {
   return Math.trunc(value);
 }
 
-/** Python 2's round(x, places): halves away from nought. */
+/** ghostControllerMixin439-440 rounds delta/percentage to2/1 places from the
+ * actual binary float. Native Python27 corroboration: cdxattributeroundagent1.
+ * Preserve signed zero before the shared decimal writer (toFixed loses -0). */
 export function pyRound(value: number, places: number): number {
-  const scale = 10 ** places;
-  return (Math.sign(value) * Math.floor(Math.abs(value) * scale + 0.5)) / scale;
+  return value === 0 ? value : roundFloat(value, places);
 }
 
 /** RunSimulation: the capacitor's time to empty, in ticks; CAP_STABLE_TIME where it lasts the hour. */

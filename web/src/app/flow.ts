@@ -13,6 +13,7 @@ import {
   getStructureGuests,
 } from "../bridge/stationPanel.ts";
 import { decodeCapacity, decodeContainer, decodeInventoryRows, decodeInventoryRowsChecked } from "../bridge/inventoryShip.ts";
+import { readSafetyDeliveries, acceptSafetyRecovery, safetyWrapAncestor, safetyDivisionRows, SAFETY_DIVISION_LABELS, type SafetyDeliveries } from "../bridge/assetSafetyInventory.ts";
 import { decodeShipBays, decodeShipBaysChecked } from "../bridge/shipBays.ts";
 import { CARGO_HOLD, SHIP_HOLDS, SHIP_HOLD_ATTRIBUTES, trackedShipHolds } from "../bridge/shipHolds.ts";
 import { decodeShipFighters, squadronsByTube } from "../bridge/shipFighters.ts";
@@ -216,7 +217,9 @@ import {
   type AssetSearchOption,
 } from "../bridge/assetSearch.ts";
 import { shownSecurity } from "../bridge/systemSecurity.ts";
-import { failsTheReading, failureCode } from "../bridge/ask.ts";
+import { duelChallengeOf, startDuelChallenge, respondToDuelChallenge, type DuelInvitation } from "../bridge/duel.ts";
+import { failsTheReading, failureCode, type Ask } from "../bridge/ask.ts";
+import { inventoryPasswords, inventoryPasswordText, type InventoryPasswordType } from "../bridge/inventoryPasswords.ts";
 import { decodeSkillHistory, decodeSkills } from "../bridge/boundSkills.ts";
 import { skillHistoryLines } from "../bridge/skillHistoryPanel.ts";
 import { SKILL_NOTIFICATION_ROWS, skillNotificationsOf, type SkillNotification } from "../bridge/skillNotifications.ts";
@@ -268,7 +271,19 @@ import {
   normalizeDivisionNames,
 } from "../bridge/wallet.ts";
 import { createWalletReads, divisionNamesOf } from "../bridge/walletReads.ts";
-import { characterCorporationOf, corporationAllianceOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
+import { createCorporationWealth, type CorporationWealthChange } from "../bridge/corporationWealth.ts";
+import { ownerDoubleClickSetting } from "./ownerDoubleClickSetting.ts";
+import { memberQuerySetting } from "./memberQuerySetting.ts";
+import { memberQueryArguments, type MemberQueryCriterion, type MemberQueryContext, type CorporationAdministration } from "../bridge/corporationMemberQuery.ts";
+import { infoWindowSetting } from "./infoWindowSetting.ts";
+import { scrollSortSetting, type ScrollSortSetting } from "./scrollSortSetting.ts";
+import { scrollWidthsSetting, type ScrollWidthsSetting } from "./scrollWidthsSetting.ts";
+import { createInfoWindows, type InfoWindows } from "./infoWindows.ts";
+import type { InfoReadScope } from "./infoReadScope.ts";
+import { createCorporationRecords } from "../bridge/corporationRecords.ts";
+import { createCorporationAggression } from "../bridge/corporationAggression.ts";
+import type { InfoIdentity, InfoSubject } from "../bridge/infoWindow.ts";
+import { characterCorporationOf, isNpcCorporation as isNpcOwnerCorporation, readNpcNpcStandings, readStandings, relationshipsOf, standingComposition, standingHistory, type ContactStandings, type NpcNpcStanding } from "../bridge/standingsReads.ts";
 import { boostersAnswered, createSkillTypeFacts, readSkillSheet } from "../bridge/skillReads.ts";
 import { ATTRIBUTE_PRIMARY, ATTRIBUTE_SECONDARY, buildSkillSheet, queuedLevels, skillInTraining, skillLevelsOf, skillPointsForLevel, skillPointsPerMinute } from "../bridge/skillSheet.ts";
 import {
@@ -414,11 +429,14 @@ import { createSpacePoller, targetsReadIsDue, type SpacePoller } from "./spacePo
 import type { RequestPriority } from "./transport.ts";
 import type { CorpOfficesResult, DronesResult, FlightStepResult } from "./api.ts";
 import { BridgeCallError } from "../bridge/callMethod.ts";
-import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping } from "../bridge/questions.ts";
+import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestionAnswer, questionKeeping, iskWords } from "../bridge/questions.ts";
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
-import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
-import { formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { convertTyped, DATE_LABELS, formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
+import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
+import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
+import { CHARACTER_TYPES } from "../bridge/showInfoLink.ts";
 import { decodeNotifications, notificationRows, type Notification } from "../bridge/notifications.ts";
 import { isCommunicationType } from "../bridge/contactNotifications.ts";
 import { decodeNotificationFormats, type NotificationFormats } from "../bridge/notificationFormats.ts";
@@ -647,7 +665,8 @@ import { readScanFullState } from "../bridge/scanFullState.ts";
 import { ammoMenu, AMMO_MENU_ATTRIBUTES, ATTRIBUTE as AMMO_ATTRIBUTE, isChargeCompatibleWithLauncher, roomForReload, type AmmoMenuEntry } from "../bridge/ammoMenu.ts";
 import { applyFitting, CHARGEABLE_GROUP_IDS, destroyRig as destroyRigCall, fitModule as fitModuleCall, GROUPABLE_GROUP_IDS, linkWeapons as linkWeaponsCall, unfitModule as unfitModuleCall, unloadChargeToCargo as unloadChargeToCargoCall, unloadChargeToContainer as unloadChargeToContainerCall, unloadModuleToCargo as unloadModuleToCargoCall, unloadModuleToContainer as unloadModuleToContainerCall, THE_HANGAR, type ModuleDestination, type WeaponBanks } from "../bridge/fitModule.ts";
 import { exportToCustomsOffice } from "../bridge/customsWrites.ts";
-import { BAY_FLAGS, corpDivisionFlag, hasSomethingToStack, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace } from "../bridge/inventoryWrites.ts";
+import { BAY_FLAGS, corpDivisionFlag, mergeStacks as mergeStacksCall, moveItems as moveItemsCall, officeAt, ordinaryContainerStackPlace, setLabel as setLabelCall, stackAll as stackAllCall, trashItems as trashItemsCall, TrashRefusedError, assembleCargoContainer as assembleCargoContainerCall, type MovePlace, type StackPlace } from "../bridge/inventoryWrites.ts";
+import { createCachedInventoryMoves } from "../bridge/cachedInventoryMoves.ts";
 import {
   buyMultipleItems,
   ordersListed,
@@ -682,7 +701,8 @@ import { FittingLinkError, fittingFromString, formatFittingUrl, parseFittingUrl,
 import { fitFitting, fittedRigsByFlag, fittingForApplying, isModularShip, isRigFlag, isThereRigMismatch, itemsToFitFrom, listHangar, listShip, VISIBLE_SUBSYSTEM_FLAGS } from "../bridge/fittingLoad.ts";
 import { fittingEftString } from "../bridge/fittingExport.ts";
 import { decodeAllianceInfo, type AllianceInfoExtra } from "../bridge/allianceInfo.ts";
-import { aggressionSettingsOf, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { aggressionSettingsOf, assertCorpAggressionStatusMethod, corporationPublicInfoOf, enlistmentFactionsOf, isNpcCorporation, type CorporationPublicInfo, type CorporationShowInfo } from "../bridge/ownerInfo.ts";
+import { toNumOrNull as corporationShareNumber } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
@@ -704,7 +724,7 @@ import { readAvailableFleetAds, readFleetFinder as readFleetFinderCalls } from "
 import { readMyLaunches } from "../bridge/launchReads.ts";
 import type { PlanetLaunchesRead } from "../bridge/planetLaunches.ts";
 import { readMarketTransactions, type MarketTransactionsRead } from "../bridge/marketTransactions.ts";
-import { decodeEntryKinds, decodeJournalEntries, journalLines, type WalletJournalRead } from "../bridge/walletJournal.ts";
+import { decodeEntryKinds, decodeJournalEntries, journalLines, corporateJournalLines, canViewCorporateJournal, type WalletJournalRead, type CorpWalletJournalRead } from "../bridge/walletJournal.ts";
 import type { WalletOverviewRead } from "../bridge/walletOverview.ts";
 import { canViewCorporateShares, readCorpShares, readMyShares, type ShareHolding } from "../bridge/walletShares.ts";
 import { readCharacterSetting as readCharacterSettingCall, saveCharacterSetting as saveCharacterSettingCall } from "../bridge/characterSettings.ts";
@@ -728,7 +748,7 @@ import { readAllianceFittings, readCharacterFittings, readCorporationFittings } 
 import type { FleetFinderRead } from "../nav/fleetJoinWatch.ts";
 import { acceptFleetInvite as acceptFleetInviteCall, applyToJoinFleet as applyToJoinFleetCall, createFleetBroadcasts, declineFleetInvite as declineFleetInviteCall, formFleet as formFleetCall, inviteToFleet as inviteToFleetCall, kickFleetMember as kickFleetMemberCall, leaveFleet as leaveFleetCall, makeFleetLeader as makeFleetLeaderCall, moveFleetMember as moveFleetMemberCall, tagFleetTarget, addToWatchlist as addToWatchlistCall, removeFromWatchlist as removeFromWatchlistCall, type FleetApplyOutcome } from "../bridge/fleetWrites.ts";
 import { BOOKMARK_EXPIRY, bookmarkScanResult as bookmarkScanResultCall, addFolder as addFolderCall, addToKnownFolders as addToKnownFoldersCall, copyBookmarks as copyBookmarksCall, moveBookmarks as moveBookmarksCall, removeFromKnownFolders as removeFromKnownFoldersCall, type MovedOrCopied, bookmarkLocation as bookmarkLocationCall, bookmarkStaticLocation as bookmarkStaticLocationCall, createSubfolder as createSubfolderCall, updateFolder as updateFolderCall, type FolderAccess, deleteBookmarks as deleteBookmarksCall, deleteFolder as deleteFolderCall, deleteSubfolder as deleteSubfolderCall, setFolderActive as setFolderActiveCall, updateBookmark as updateBookmarkCall, updateSubfolder as updateSubfolderCall } from "../bridge/bookmarkWrites.ts";
-import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall } from "../bridge/giveMoney.ts";
+import { giveIskFromWallet as giveIskFromWalletCall, giveMoney as giveMoneyCall, transferValue, transferReason } from "../bridge/giveMoney.ts";
 import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepWaypoints, movedWaypoint, readWaypoints, withWaypoint, withoutWaypoint, type DestinationFacts, type PilotPlace } from "../nav/waypoints.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
@@ -781,6 +801,8 @@ import { decodeScriptValue } from "../bots/scriptCodec.ts";
 import { expandSubBots, hasSubBots, type BotResolution, type SubBotReference } from "../bots/subBots.ts";
 import { autoRejectInvitations } from "./autoRejectInvitations.ts";
 import { createChatConversations, type ChatConversations } from "./chatConversations.ts";
+import { createDirectTrades, type DirectTrades, type FittedTradeSource } from "./directTrades.ts";
+import { fmtAmt } from "../bridge/pyNumbers.ts";
 import { disableAutopilotAtEachWaypoint } from "./autopilotStopAtEachWaypoint.ts";
 import { routeData, routeJumps, routeMarkers, type RouteMarker } from "../nav/routeMarkers.ts";
 import { optimizedWaypoints, routeToOptimize, UNREACHABLE_JUMP_COUNT } from "../nav/optimizeRoute.ts";
@@ -1078,11 +1100,13 @@ export type RackMenuEntry =
   | { readonly kind: "rule" };
 
 /**
- * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a whole number
+ * The client's quantity question (uix.QtyPopup, as invControllers.PromptUserForQuantity asks it): a number
  * from `min` to `max`, `value` to begin with, and its hint, a label of the client's (`hintLabel`) with the page's
  * own words for it (`hint`).
  */
 export interface QuantityAsk {
+  /** QtyPopup's floatonly precision; the default is an integer field. */
+  readonly digits?: number;
   readonly n: number;
   readonly min: number;
   readonly max: number;
@@ -1100,6 +1124,31 @@ export interface QuantityAsk {
   readonly label?: string;
 }
 
+/** The native CEO ListWnd, with a stable row index so duplicate candidates stay separate. */
+export interface CorporationCEOChoice {
+  readonly n: number;
+  readonly rows: readonly { readonly characterID: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+}
+
+export interface CorporationWalletChoice {
+  readonly n: number;
+  readonly rows: readonly { readonly accountKey: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+}
+
+/** AwardDecoration's generic ListWnd and the following native NamePopup. */
+export type CorporationAwardAsk = {
+  readonly n: number;
+  readonly hint: string;
+  readonly rows: readonly { readonly medalID: number; readonly name: string }[];
+  readonly selectedIndex: number | null;
+  readonly selectionError: string;
+  readonly stage: "medal" | "reason";
+};
+
 /** The client's ship naming window (shipNameDialog.py), asked before a packaged ship is assembled. */
 export interface ShipNameAsk {
   readonly n: number;
@@ -1109,6 +1158,12 @@ export interface ShipNameAsk {
   readonly currentName: string;
   /** Whether the window offers Do Not Ask Again (show_suppress: on an assembly, not on Change Name). */
   readonly suppress: boolean;
+}
+
+/** NamePopup's inventory password request; entered text is never put in a signal. */
+export interface InventoryPasswordAsk {
+  readonly n: number;
+  readonly type: InventoryPasswordType;
 }
 
 /** The client's skill requirement window (skillRequirementDialog.py), for a type the pilot cannot use. */
@@ -1395,6 +1450,13 @@ export interface SaidDialog {
 }
 
 export interface AppFlow {
+  readonly directTrades: DirectTrades;
+  startDirectTrade(characterID: number): Promise<void>;
+  readonly duelInvitation: ReadableSignal<DuelInvitation | null>;
+  startDuel(characterID: number): Promise<void>;
+  answerDuel(n: number, accept: boolean, block: boolean): Promise<void>;
+  expireDuel(n: number): void;
+  closeDuel(n: number): void;
   readonly droneRecovery: ReadableSignal<DroneRecoveryState>;
   retryDroneRecovery(): Promise<void>;
   requireAutomationReady(): void;
@@ -1427,8 +1489,9 @@ export interface AppFlow {
   refreshStationPanel(): Promise<void>;
   /** Load the Inventory & Ship panel (station hangar + active-ship cargo). */
   loadInventory(): Promise<void>;
-  /** Stack all loose stacks in the hangar or active-ship cargo, then refresh. */
-  stackContainer(target: "hangar" | "cargo"): Promise<void>;
+  readonly safetyDeliveries: ReadableSignal<SafetyDeliveries | null>;
+  /** Stack loose stacks in the hangar, an active-ship hold, a corporation division or an ordinary container, then refresh. */
+  stackContainer(target: StackPlace): Promise<void>;
   /** Board a hangar ship (it becomes active), then refresh. */
   boardShip(shipID: number): Promise<void>;
   /**
@@ -1463,6 +1526,7 @@ export interface AppFlow {
   clearSelection(): void;
   /** Open a container and read its contents; null closes it. */
   openContainer(containerID: number | null): Promise<void>;
+  selectSafetyDivision(divisionID: number): void;
   /** Goal R40 — expand a ship in the Ships card and read its bays; null closes it. */
   openShipBays(shipID: number | null): Promise<void>;
   /** Project the latest loaded fit/dogma/bay observations; performs no IO or actions. */
@@ -2078,14 +2142,58 @@ export interface AppFlow {
   corporationMemberRoleOptions(): Promise<readonly { roleID: string; nameID: number; groupID: number }[]>;
   readonly memberDetailsShown: ReadableSignal<{ readonly characterID: number; readonly n: number } | null>;
   showMemberDetails(characterID: number): void;
-  corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails>;
-  corporationMemberRoleBase(): Promise<number | null>;
+  corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null>;
+  corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null>;
+  corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null>;
+  corporationExpelMenu(ownerIDs: readonly number[]): Promise<{ readonly multiple: boolean; readonly confirm: () => Promise<void> } | null>;
+  corporationCEOMenu(ownerIDs: readonly number[]): Promise<{ readonly confirm: () => Promise<void> } | null>;
+  readonly corporationCEOChoice: ReadableSignal<CorporationCEOChoice | null>;
+  selectCorporationCEO(n: number, index: number): void;
+  answerCorporationCEO(n: number, confirmed: boolean): void;
+  corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null>;
+  corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null>;
+  readonly corporationAwardAsk: ReadableSignal<CorporationAwardAsk | null>;
+  selectCorporationAward(n: number, index: number): void;
+  answerCorporationAward(n: number, confirmed: boolean, reason?: string): void;
+  readonly corporationApplicationsChanged: ReadableSignal<number>;
+  readonly corporationDecorationsChanged: ReadableSignal<number>;
+  corporationDecorations(): Promise<CorporationDecorations>;
+  corporationDecorationCreationEnabled(): Promise<boolean>;
+  readonly medalDesignerShown: ReadableSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>;
+  showMedalDesigner(): void;
+  closeMedalDesigner(): void;
+  medalColourPaletteOpened(): void;
+  readonly corporationWalletChoice: ReadableSignal<CorporationWalletChoice | null>;
+  selectCorporationWallet(n: number, index: number): void;
+  answerCorporationWallet(n: number, confirmed: boolean): void;
+  prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused">;
+  /** Native medals.CreateMedal: true on normal service return (including No confirmation), false on a shown refusal. */
+  createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean>;
+  corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]>;
+  medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo>;
+  readonly corporationApplicationsRequested: ReadableSignal<number>;
+  requestCorporationApplications(): void;
+  serveCorporationApplicationsRequest(n: number): void;
+  corporationApplications(): Promise<readonly CorporationApplication[]>;
+  corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void>;
+  corporationApplicationsExpanded(applicationID?: number | null): number | null;
+  openCorporationMemberDetails(characterID: number): Promise<void>;
+  memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary";
+  corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails>;
+  corporationMemberRoleBase(current?: () => void): Promise<number | null>;
   corporationMemberIDs(): Promise<readonly number[]>;
-  corporationMemberTitles(): Promise<readonly CorporationTitle[]>;
+  corporationAdministration(current?: () => void): Promise<CorporationAdministration>;
+  corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext>;
+  corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]>;
+  corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]>;
+  corporationMemberQueryNeedsValue(current?: () => void): Promise<void>;
+  memberQueryPreference(name: "FMBQincludeImplied" | "FMBQsearchTitles"): { readonly value: ReadableSignal<boolean>; set(value: boolean): void };
+  corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]>;
   corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }>;
   corporationSummaryGroupOpen(groupID: number, open?: boolean): boolean;
+  corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean;
   saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, masks: RoleMasks, titleMask: number): Promise<CorporationMemberDetails>;
-  giveCorporationShares(characterID: number): Promise<void>;
+  giveCorporationShares(characterID: number, current?: () => void): Promise<void>;
   /** The client's online status service primed, where it is not: the watched contacts' online state in the store. */
   primeContactsOnline(): Promise<void>;
   /** A contact added, or edited where `edit` (charMgr.AddContact, EditContact); fails with the server's words. */
@@ -2143,6 +2251,7 @@ export interface AppFlow {
   readonly imageServer: ReadableSignal<string | null>;
   /** The image server's address read from the pilot's global config, once. */
   loadImageServer(): void;
+  capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void>;
   /** Player corporations' logos (eveIcon.CorpIcon's logoData) as read, by the corporation; null for one with none. */
   readonly corpLogos: ReadableSignal<Readonly<Record<string, api.CorpLogoData | null>>>;
   /** The library read once, and the logos of these corporations asked for where they are not had. */
@@ -2365,6 +2474,26 @@ export interface AppFlow {
   loadWallet(how?: { readonly fresh?: boolean }): Promise<void>;
   /** The pilot's own ISK as the client keeps it (walletSvc.py wealth); null where it could not be read. */
   pilotWealth(): Promise<number | null>;
+  /** walletSvc.GetCorpWealth: fresh, None for active division; native UserError becomes0. */
+  corporationWealth(accountKey?: number | null): Promise<number>;
+  /** walletSvc.GetCorpWealthCached1Min, keyed separately from fresh window reads. */
+  cachedCorporationWealth(accountKey: number): Promise<number>;
+  /** Native OnCorpAccountChangedClient, after the division's old-value read/cache update. */
+  readonly corporationWealthChanged: ReadableSignal<CorporationWealthChange | null>;
+  corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null>;
+  readonly moneyTransfer: ReadableSignal<MoneyTransfer | null>;
+  readonly ownerDoubleClickPreference: ReadableSignal<0 | 1>;
+  readonly infoWindows: InfoWindows;
+  readonly infoWindowReusePreference: ReadableSignal<boolean>;
+  scrollSortPreference(scrollID: string): ScrollSortSetting;
+  scrollWidthsPreference(scrollID: string): ScrollWidthsSetting;
+  setInfoWindowReusePreference(value: boolean): void;
+  setOwnerDoubleClickPreference(value: 0 | 1): void;
+  ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
+  ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void>;
+  openMoneyTransfer(toID: number, corporate?: boolean): Promise<void>;
+  confirmMoneyTransfer(n: number, amount: string, reason: string): Promise<void>;
+  closeMoneyTransfer(n?: number): void;
   /** Give Money's OK (transferMoneyWnd.py Confirm, 138 to 152): the pilot's ISK given to a character. Fails as the call fails. */
   giveMoney(toID: number, amount: number, reason: string): Promise<void>;
   /**
@@ -2463,6 +2592,8 @@ export interface AppFlow {
    */
   readonly walletJournal: ReadableSignal<WalletJournalRead>;
   loadWalletJournal(year?: number | null, month?: number | null): Promise<void>;
+  readonly corpWalletJournal: ReadableSignal<CorpWalletJournalRead>;
+  loadCorpWalletJournal(accountKey?: number, year?: number | null, month?: number | null): Promise<void>;
   /**
    * The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with its derived lines and the
    * kinds' names, as the account service keeps them, and the market service's trades (marketTransactions).
@@ -2812,7 +2943,7 @@ export interface AppFlow {
   npcCorporationHeadquarters(corporationID: number): Promise<{ readonly itemID: number; readonly typeID: number } | null>;
   /** A character's corporation (charMgr.GetPublicInfo), or null. */
   characterCorporation(characterID: number): Promise<number | null>;
-  /** A corporation's alliance (corp.GetCorporation: corpmgr.GetCorporations), or null. */
+  /** A corporation's alliance from corp.GetCorporation's shared record cache, or null. */
   corporationAlliance(corporationID: number): Promise<number | null>;
   /** A character's Show Info header's reads (construct_header_character): its Bio, bloodline, start, militia, corporation, titles and security status. */
   characterInfoHeader(characterID: number): Promise<CharacterInfoHeader>;
@@ -2922,7 +3053,7 @@ export interface AppFlow {
    * player's corporation, the factions its members may enlist with (fwEnlistmentSvc.GetCorpAllowedEnlistmentFactions,
    * fwCharacterEnlistmentMgr's), with the server's time it was read at. Null where the record is not had.
    */
-  corporationShowInfo(corporationID: number): Promise<CorporationShowInfo | null>;
+  corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): Promise<CorporationShowInfo | null>;
   /**
    * Show Info on an alliance (infoContentBase's ConstructHeaderAlliance; infosvc.UpdateDataAlliance): the alliance
    * service's GetAlliancePublicInfo, allianceRegistry's by name (all_cso.py 135 to 136). Null where it is not had.
@@ -3317,6 +3448,8 @@ export interface AppFlow {
   readonly shipNameAsked: ReadableSignal<ShipNameAsk | null>;
   /** Its answer: the name on Confirm, null on Later; and its Do Not Ask Again, kept from then on where ticked. */
   answerShipName(n: number, name: string | null, doNotAskAgain: boolean): void;
+  readonly inventoryPasswordAsked: ReadableSignal<InventoryPasswordAsk | null>;
+  answerInventoryPassword(n: number, text: string | null): void;
   /** A packaged ship in the hangar assembled, as the client's menu does; and with `board`, boarded after (Board Ship). */
   assembleShip(shipID: number, board: boolean): Promise<void>;
   /** An assembled ship of the pilot's renamed, as the client's Change Name does: its name asked, then named. */
@@ -3839,6 +3972,20 @@ function dogmaNumber(item: DogmaItemInfo | null, attributeID: number): number | 
   return typeof value === "number" ? value : null;
 }
 
+export interface MoneyTransfer {
+  readonly n: number;
+  readonly corporate: boolean;
+  readonly fromID: number;
+  readonly toID: number;
+  readonly fromName: string;
+  readonly toName: string;
+  readonly fromAccountKey: number | null;
+  readonly divisionName: string | null;
+  readonly maximum: number;
+  readonly busy: boolean;
+  readonly error: string | null;
+}
+
 export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}): AppFlow {
   let sessionCloseGeneration = 0;
   let requestGeneration = 0;
@@ -3897,13 +4044,66 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // one has said: then the browser's own is all there is. (It is the server's clock, whichever pilot's answer
   // said it: it is not forgotten when another pilot is chosen. Through the web gateway it is the BFF's own.)
   let serverClockAheadMs: number | null = null;
-  const bridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
+  const rawBridgeAsk = api.bridgeAsk(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
   });
   const serverNow = (): number => Date.now() + (serverClockAheadMs ?? 0);
   // A write the page makes for its pilot, the same way, with its meaning it said (api.bridgeDo).
-  const bridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
+  const rawBridgeDo = api.bridgeDo(callOptions, (serverNowMs) => {
     serverClockAheadMs = serverNowMs - Date.now();
+  });
+  let inventoryPasswordEpoch = 0, inventoryPasswordSwitching = false;
+  function inventoryPasswordScope() {
+    const current = callOptions.captureRequestGuard!(), sink = callOptions.captureNotificationSink!();
+    const epoch = inventoryPasswordEpoch, characterID = store.station.get().online?.characterID ?? null;
+    const passwordCurrent = () => {
+      current();
+      if (sessionClosing || inventoryPasswordSwitching || epoch !== inventoryPasswordEpoch || characterID !== (store.station.get().online?.characterID ?? null))
+        throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This inventory request belongs to a retired pilot session.", 0);
+    };
+    const scoped: api.ApiOptions = { ...callOptions, captureRequestGuard: () => passwordCurrent, captureNotificationSink: () => sink };
+    const passwords = inventoryPasswords({
+      ask: api.bridgeAsk(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      act: api.bridgeDo(scoped, now => { serverClockAheadMs = now - Date.now(); }),
+      current: passwordCurrent, prompt: type => askInventoryPassword(type, passwordCurrent),
+    });
+    return { current: passwordCurrent, options: scoped, ...passwords };
+  }
+  const bridgeAsk: Ask = (service, method, args, kwargs, of) => service === "invbroker" && of != null
+    ? inventoryPasswordScope().ask(service, method, args, kwargs, of) : rawBridgeAsk(service, method, args, kwargs, of);
+  const bridgeDo: Ask = (service, method, args, kwargs, of) => service === "invbroker" && of != null
+    ? inventoryPasswordScope().act(service, method, args, kwargs, of) : rawBridgeDo(service, method, args, kwargs, of);
+  const inventoryMoves = createCachedInventoryMoves(() => {
+    const passwordScope = inventoryPasswordScope(), current = passwordScope.current, scoped = passwordScope.options;
+    return {
+      ask: passwordScope.ask, act: passwordScope.act, current,
+      activeShipID: store.inventory.get().activeShipID ?? store.fitting.get().activeShipID ?? null,
+      dockedAt: dockedNow(),
+      structureID: store.station.get().online?.structureID ?? null,
+      now: serverNow,
+      corporationRole: BigInt(store.station.get().online?.corpRole ?? "0"),
+      isCorporationOwner: async ownerID => {
+        const online = store.station.get().online;
+        if (ownerID === online?.characterID) return false;
+        if (ownerID === online?.corporationID || (ownerID >= 1_000_000 && ownerID <= 1_999_999) || (ownerID >= 98_000_000 && ownerID <= 98_999_999)) return true;
+        if (ownerID < 100_000_000 || ownerID > 2_099_999_999) return false;
+        // Original IsPlayerCorporation consults cfg.eveowners for pre-Inv64 IDs.
+        await memberNames({ current, options: { ...scoped, captureRequestGuard: () => current } }, [{ kind: "ownerType", id: ownerID }]); current();
+        const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)) ?? 0);
+        if (!typeID) return false; // cfg.eveowners KeyError / generic type0.
+        const facts = await infoTypeFacts([typeID]); current();
+        if (!facts[typeID]) throw new Error("The stack owner's type could not be read.");
+        return facts[typeID].groupID === 2;
+      },
+      blankLockValues: async when => {
+        const reasonLabel = "UI/Generic/NoReasonWasSpecified", dateLabel = DATE_LABELS.ll!;
+        await wordsNow([reasonLabel, dateLabel]); current();
+        const templates = store.words.get().templates, reason = templates[reasonLabel];
+        const lockTime = convertTyped(14, when, null, { templates, nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        if (typeof reason !== "string" || !lockTime) throw new Error("The client's lock reason and date words could not be loaded.");
+        return { type: "dict", entries: [["reason", plainText(reason)], ["lockTime", lockTime]] };
+      },
+    };
   });
   // The same write under a caller's own fence. The shared lane may hold a call back: the fence is run at the
   // dispatch itself, before a hosted fetch can be taken by a newer generation of its caller.
@@ -3936,6 +4136,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const baseCycleTimesOfTypes = keptByType((typeIDs: readonly number[]) => api.loadBaseCycleTimes(typeIDs, callOptions).then((answered) => answered.baseCycleMs));
   // (That read leaves out a type the tables do not know: once it has answered, that is what is known of the type.)
   const combatUtilityOfTypes = keptWhereKnown((typeIDs: readonly number[]) => api.combatUtilityTypes(typeIDs, callOptions));
+  const infoTypeFacts = keptByType(async (typeIDs: readonly number[]) => (await api.getDogmaTypes(typeIDs, [], callOptions)).types);
+  const corporationRecords = createCorporationRecords(() => store.station.get().online?.corporationID ?? null);
+  const corporationAggression = createCorporationAggression();
+  const infoWindows = createInfoWindows({
+    readCorporation: corporationShowInfo,
+    // eve_exception_handler handles a native UserError by its dialog and dict.
+    // The structured bridge refusal preserves that exception identity.
+    reportError: error => error instanceof BridgeCallError && error.refusal !== null && sayRefusalDialog(error, errorWords(error)),
+    reuse: () => infoWindowSetting(store.session.get().accountID, settingsStorage).value.get(),
+    shift: () => false, // UI snapshots the live modifier into each command.
+    resolve: async (subject: InfoSubject): Promise<InfoIdentity | null> => {
+      const current = callOptions.captureRequestGuard!(); current();
+      let typeID: number | null = null, itemID: number | null = null;
+      if (subject.kind === "character") {
+        await ownerEntryInfo(subject.characterID, (type, item) => { typeID = type; itemID = item; });
+      } else if (subject.kind === "corporation") { typeID = 2; itemID = subject.corporationID; }
+      else if (subject.kind === "alliance") { typeID = 16159; itemID = subject.allianceID; }
+      else if (subject.kind === "faction") { typeID = 30; itemID = subject.factionID; }
+      else { typeID = subject.typeID; if (subject.kind !== "type") itemID = subject.itemID; }
+      current();
+      if (typeID === null || typeID <= 0) return null;
+      if (itemID === 500021) { sayDialog("KillerOfUnknownFaction", null, "The killer belongs to an unknown faction."); return null; }
+      const facts = await infoTypeFacts([typeID]); current();
+      const fact = facts[typeID];
+      if (!fact || fact.categoryID === null) throw new Error("The information type's category could not be read.");
+      // Original GetInfoWindowContentClass196-203: category first, then
+      // idCheckers.IsCharacter/IsCorporation. Dynamic old item IDs consult
+      // cfg.eveowners; a type-only window has no owner ID to classify.
+      if (fact.categoryID === 6) return { typeID, itemID, content: "ship" };
+      if (itemID !== null) {
+        if ((itemID >= 3_000_000 && itemID <= 3_999_999) ||
+            (itemID >= 90_000_000 && itemID <= 97_999_999) ||
+            (itemID >= 2_100_000_000 && itemID <= 2_129_999_999)) return { typeID, itemID, content: "character" };
+        if (itemID >= 100_000_000 && itemID <= 2_099_999_999) {
+          const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+          await memberNames(scope, [{ kind: "ownerType", id: itemID }]); current();
+          const ownerType = nameCache.get(nameKey("ownerType", itemID));
+          if (ownerType !== null && ownerType !== undefined) {
+            // The installed client's types.fsdbinary contains type0/group0.
+            // EveJS's generic non-owner row is valid and is no character/corp.
+            if (Number(ownerType) === 0) return { typeID, itemID, content: "legacy" };
+            const owners = await infoTypeFacts([Number(ownerType)]); current();
+            const owner = owners[Number(ownerType)];
+            if (!owner) throw new Error("The owner's type could not be read from the client data.");
+            if (owner.groupID === 1) return { typeID, itemID, content: "character" };
+            if (owner.groupID === 2) return { typeID, itemID, content: "corporation" };
+          }
+        } else if ((itemID >= 1_000_000 && itemID <= 1_999_999) ||
+                   (itemID >= 98_000_000 && itemID <= 98_999_999)) return { typeID, itemID, content: "corporation" };
+      }
+      return { typeID, itemID, content: "legacy" };
+    },
+  });
   const attributesOfTypes = keptTypeAttributes((typeIDs, attributeIDs) => api.fetchTypeDogma(typeIDs, attributeIDs, callOptions));
   // The repairs begun (bridge/dogmaWrites.ts): each is ended by the page when its time is up, as a client ends
   // its own, and the ship is read again then, which is when the module is mended.
@@ -4511,8 +4764,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       await wordsNow([label]).catch(() => {});
       const qty = await askQuantity({ min: 0, max: most, value: most, hintLabel: label, hint: most === 0 ? "There are none left where they were." : "How many?" });
       if (qty === null || qty <= 0) return;
-      // containerInventory: GetInventoryFromId(chargeLocationID), the inventory of where the charges lie.
-      const split = await bridgeDo("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
+      // Original compiled DropLoadChargeToModule: GetInventoryFromId(source).Add, not its direct moniker.
+      // Split in the source custody through the shared broker before loading the returned numeric ID.
+      const split = await inventoryMoves.act("invbroker", "Add", [charge.itemID, charge.locationID], { qty, flag: charge.flagID }, charge.locationID);
       const splitID = typeof split === "number" ? split : Number(unwrapLong(split));
       if (!Number.isSafeInteger(splitID) || splitID <= 0) return;
       chargeIDs = [splitID];
@@ -4653,6 +4907,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // The wallet's reads, asked call by call as the client's wallet and account services ask them
   // (bridge/walletReads.ts), with what those services keep kept for this pilot.
   const walletReads = createWalletReads(bridgeAsk);
+  const corporationWealthSignal = createSignal<CorporationWealthChange | null>(null);
+  const corporationWealthReads = createCorporationWealth({
+    capture: () => {
+      const scope = captureMemberOperation();
+      return { corporationID: scope.online.corporationID, ask: scope.ask, current: scope.current };
+    },
+    changed: change => { corporationWealthSignal.set(change); updateTransferWealth(change.balance, change.corporationID); },
+  });
   // Whether every training slot of the account is used, as the client's queue service reckons and keeps it
   // (bridge/trainingSlots.ts): what says whether a change of the queue may start it.
   const trainingSlots = createTrainingSlots(bridgeAsk);
@@ -4743,6 +5005,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } catch (error) {
       if (isSessionLost(error)) {
         stopLiveStream();
+        infoWindows.reset();
+        corporationRecords.reset();
+        corporationAggression.reset();
         store.apply({ type: "character/offline" });
       }
     }
@@ -4953,6 +5218,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * OnItemsChanged, which the client's inventory cache scatters one by one).
    */
   function oneItemChanged(args: readonly unknown[]): void {
+    inventoryMoves.itemChanged(args[0], args[1]);
+    // Keep already observed parents current for invCache's removal-tax walk.
+    // The notice contains the complete current item, including a changed owner.
+    for (const row of decodeInventoryRows({ type: "list", items: [args[0] as JsonValue] })) {
+      if (!safetyItemCache.has(row.itemID)) continue;
+      if (row.quantity <= 0 || !row.locationID) safetyItemCache.delete(row.itemID);
+      else safetyItemCache.set(row.itemID, row);
+    }
     // ONE item's move comes by this name, and several by OnItemsChanged: the
     // server sends this one unless a batch is asked for. A drone landing in
     // its bay is one item, and with only the batch's own refresh heard the window
@@ -4972,6 +5245,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // reckoned again where they are the page's, as the client's drone panel takes its drones again
     // (clientDogmaLocation.GetActiveDrones).
     const fittingNow = store.fitting.get();
+    // FittingController.OnDogmaItemChange344-365 updates slots when flag or
+    // location changes on an item entering/leaving the displayed ship. Trade
+    // cancellation can restore a fitted item without a fitting-window action.
+    if (fittingNow.activeShipID !== null && readDictPairs(args[1]).some(([key]) => Number(key) === 3 || Number(key) === 4)
+        && itemChangeLocations(args)?.includes(fittingNow.activeShipID)) scheduleFittingRefresh();
     if (fittingNow.statsFrom === "page" && itemChangeTouchesDroneBay(args, fittingNow.activeShipID)) scheduleShipReckoning();
     // A hull with a fighter bay: any item moved into, out of or within the ship, its figures reckoned again
     // (fittingController.OnDogmaItemChange: a flag or location changed with the ship before or after, on_stats_changed;
@@ -4995,6 +5273,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     receivedAtMs: number,
     insideMultiEvent = false,
   ): void {
+    directTrades.receive(method, args);
+    if (method === "OnLockedItemChange") inventoryMoves.invalidate(Number(args[2]));
+    if (method === "OnDuelChallenge") {
+      const incoming = duelChallengeOf(args);
+      if (incoming) {
+        duelInvitationSignal.set({ ...incoming, n: ++duelInvitationN, expired: false, clockOffsetMs: serverNow() - Date.now() });
+        requestNames([incoming.characterID, incoming.corporationID, ...(incoming.allianceID ? [incoming.allianceID] : [])].map(id => ({ kind: "owner" as const, id })));
+        requestWords(["UI/Crimewatch/Duel/InvitationWindowCaption", "UI/Crimewatch/Duel/DuelDecleration", "UI/Crimewatch/Duel/Accept", "UI/Crimewatch/Duel/Decline", "UI/Crimewatch/Duel/BlockCommunications", "UI/Common/Corporation", "UI/Common/Alliance"]);
+      }
+    }
+    if (method === "OnCrimewatchEngagementCreated" && duelInvitationSignal.get()?.characterID === Number(args[0])) duelInvitationSignal.set(null);
+    if (method && ["OnCrimewatchEngagementCreated", "OnCrimewatchEngagementEnded", "OnCrimewatchEngagementStartTimeout", "OnCrimewatchEngagementStopTimeout"].includes(method)) {
+      const held = store.flight.get().crimewatch, id = Number(args[0]);
+      const expiry = method === "OnCrimewatchEngagementStopTimeout" ? -1n : unwrapLong(args[1]);
+      if (held && Number.isSafeInteger(id) && (method === "OnCrimewatchEngagementEnded" || expiry !== null)) {
+        const others = held.states.engagements.filter(entry => Number(entry.characterID) !== id);
+        const engagements = method === "OnCrimewatchEngagementEnded" ? others : [...others, { characterID: id, expiry: String(expiry) }];
+        store.apply({ type: "flight/crimewatch", crimewatch: { ...held, states: { ...held.states, engagements } } });
+      }
+    }
+    if (method === "OnCorporationMedalAdded") corporationDecorationsChangedSignal.set(corporationDecorationsChangedSignal.get() + 1);
+    if (method === "OnCorporationApplicationChanged" && Number(args[1]) === onlineCharacterID()) {
+      corporationApplicationsChangedSignal.set(corporationApplicationsChangedSignal.get() + 1);
+      // base_corporation_ui204-209: the docked station lobby reloads its
+      // offices for the applicant, including when accepting changes corpid.
+      if (store.station.get().online?.stationID) void loadStationOffices().catch(() => {});
+    }
     // ⚠ `"__MultiEvent"` UNWRAP — THIS IS A REAL FIX, NOT DEFENSIVE CODE. The
     // server has exactly one call site for it (`notifyFleetMultiEvent`,
     // fleetRuntime.js:786), and it fires ONLY when more than one
@@ -5212,6 +5517,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         characterID: online?.characterID ?? null,
         corporationID: online?.corporationID ?? null,
       });
+      if (args[0] === "cash" && Number(args[1]) === online?.characterID && args[2] !== null && args[2] !== undefined) {
+        const digits = toAmountString(args[2] as JsonValue), balance = digits === null ? Number.NaN : Number(digits);
+        if (Number.isFinite(balance)) updateTransferWealth(balance);
+      }
+      void corporationWealthReads.accountChanged(args[0], args[1], (args[2] ?? null) as JsonValue, {
+        corporationID: online?.corporationID ?? null,
+        corpRole: online?.corpRole,
+      }).catch(() => {});
       if (store.wallet.get().loaded) {
         void loadWallet().catch(() => {});
       }
@@ -5230,6 +5543,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     }
     // bco_corporations.OnCorporationChanged: the corporation's own row is not what was kept.
     if (method === "OnCorporationChanged") {
+      try { corporationRecords.changed(Number(unwrapLong(args[0] as JsonValue)), args[1] as JsonValue); }
+      catch (error) { console.error(error); }
       walletReads.corporationChanged();
     }
     // standingsvc keeps the pilot's standings as the server changes them (OnStandingSet, OnStandingsModified),
@@ -5328,7 +5643,21 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       if (corpWalletSharesWanted && ownerChanged(online?.corporationID)) void loadWalletShares(true).catch(() => undefined);
     }
     const sessionNames = sessionChangeNames(method, args);
-    if (sessionNames?.includes("corpid")) corporationMembershipGeneration++;
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      const online = store.station.get().online;
+      const station = sessionNames.includes("stationid") ? sessionChangeValue(method, args, "stationid") : online?.stationID;
+      const structure = sessionNames.includes("structureid") ? sessionChangeValue(method, args, "structureid") : online?.structureID;
+      const inSpace = sessionNames.includes("solarsystemid") ? sessionChangeValue(method, args, "solarsystemid") != null : station == null && structure == null;
+      // Original ProcessSessionChange155-161 returns early for an in-space ship change, even with location keys.
+      if (!sessionNames.includes("shipid") || !inSpace) inventoryMoves.resetLocalLocks();
+    }
+    if (sessionNames?.includes("charid")) { corporationRecords.reset(); corporationAggression.reset(); }
+    if (sessionNames?.includes("corpid")) {
+      const value = sessionChangeValue(method, args, "corpid");
+      corporationRecords.membershipChanged(value === null ? null : Number(unwrapLong(value)));
+    }
+    if (sessionNames?.includes("charid") && sessionChangeValue(method, args, "charid") === null) infoWindows.reset();
+    if (sessionNames?.includes("corpid")) { corporationMembershipGeneration++; cancelCorporationWalletChoice(); cancelCorporationCEOChoice(); cancelCorporationAward(); corporationWealthSignal.set(null); if (moneyTransferSignal.get()?.corporate) closeMoneyTransfer(); }
     if (sessionNames?.includes("corpid")) {
       corpWalletSharesGeneration++;
       corpWalletSharesSignal.set(NO_WALLET_SHARES);
@@ -5362,6 +5691,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ...(sessionNames.includes("corpAccountKey") ? { corpAccountKey: ownerOf(sessionChangeValue(method, args, "corpAccountKey")) } : {}),
         ...(sessionNames.includes("role") ? { role: wholeDigits(sessionChangeValue(method, args, "role")) } : {}),
       });
+      if (sessionNames.some(name => name === "corpid" || name === "corprole")) {
+        corpWalletJournalGeneration += 1;
+        corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+        walletReads.corporationChanged();
+        containerReadGeneration += 1;
+        const open = store.inventory.get().container;
+        if (open && (open.safety || safetyWrapAncestor(open.itemID, safetyItemCache) !== null)) store.apply({ type: "inventory/container", container: null });
+        safetyCacheGeneration += 1;
+        safetyItemCache.clear();
+        void loadSafetyDeliveries().catch(() => {});
+      }
+    }
+    // invCache.ProcessSessionChange143-170: these place changes invalidate
+    // cached parent inventories as well as any read still coming from them.
+    if (sessionNames?.some(name => name === "stationid" || name === "structureid" || name === "solarsystemid")) {
+      containerReadGeneration += 1;
+      safetyCacheGeneration += 1;
+      safetyReadGeneration += 1;
+      safetyItemCache.clear();
+      safetyDeliveriesSignal.set(null);
+      store.apply({ type: "inventory/container", container: null });
     }
     // godma.ProcessSessionChange (1156, 1199): another station, system, ship, character or structure, and godma
     // ends every repair it began. So does the page.
@@ -5380,6 +5730,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // crimewatchSvc.ProcessSessionChange and OnSessionChanged: another place, or another system or ship, and
     // the client asks crimewatch its states again. So does the page, of the BFF.
     if (sessionNames?.some((name) => CRIMEWATCH_SESSION_NAMES.has(name)) || (method !== null && CRIMEWATCH_NOTICES.has(method))) {
+      if (sessionNames?.some(name => name === "locationid" || name === "charid")) {
+        duelInvitationSignal.set(null);
+        directTrades.reset(true);
+      }
       void loadCrimewatch().catch(() => {});
     }
     // The job board marks every mission out of date when the pilot's ship or station changes
@@ -5703,12 +6057,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    */
   const INVENTORY_REFRESH_COALESCE_MS = 400;
   let inventoryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let fittingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleFittingRefresh(): void {
+    if (fittingRefreshTimer !== null) return;
+    const current = callOptions.captureRequestGuard!();
+    fittingRefreshTimer = setTimeout(() => {
+      fittingRefreshTimer = null;
+      try { current(); } catch { return; }
+      void loadFitting().catch(() => {});
+    }, HOLD_REFRESH_COALESCE_MS);
+  }
   function inventoryShowsItemChange(args: readonly unknown[]): boolean {
     const inventory = store.inventory.get();
     if (!inventory.loaded) return false;
     const places = itemChangeLocations(args);
     if (places === null) return true;
-    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
+    const shown = [inventory.activeShipID, inventory.openShip?.itemID ?? null, inventory.container?.itemID ?? null, inventory.stationID, inventory.structureID ?? null];
     return places.some((placeID) => shown.includes(placeID));
   }
   function scheduleInventoryRefresh(): void {
@@ -5717,6 +6081,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       inventoryRefreshTimer = null;
       void (async () => {
         await loadInventory();
+        // invCache.OnItemChange updates both the old and new cached container.
+        // Read the open view from that cache too, including a Trade source.
+        const container = store.inventory.get().container;
+        if (container) await openContainer(container.itemID);
         const open = store.inventory.get().openShip;
         if (open) await openShipBays(open.itemID);
       })().catch(() => {});
@@ -5842,6 +6210,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   function stopLiveStream(): void {
+    inventoryMoves.clear();
+    if (fittingRefreshTimer !== null) clearTimeout(fittingRefreshTimer);
+    fittingRefreshTimer = null;
+    containerReadGeneration += 1;
+    safetyCacheGeneration += 1;
+    safetyItemCache.clear();
+    safetyDeliveriesSignal.set(null);
+    safetyWrapNames.clear();
+    safetyReadGeneration += 1;
     if (liveStream) {
       liveStream.close();
       liveStream = null;
@@ -5966,7 +6343,38 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // independently (their own error is preserved) so one failed read never
   // blanks the other — R2's Promise.allSettled rule, applied here on the BFF's
   // already-settled per-container results. A lost session unwinds to select.
+  const safetyDeliveriesSignal = createSignal<SafetyDeliveries | null>(null);
+  const safetyWrapNames = new Map<number, string | null>();
+  const safetyItemCache = new Map<number, InventoryItemRow>();
+  let safetyCacheGeneration = 0;
+  function rememberSafetyParents(rows: readonly InventoryItemRow[]): void {
+    for (const row of rows) safetyItemCache.set(row.itemID, row);
+  }
+  let safetyReadGeneration = 0;
+  async function loadSafetyDeliveries(): Promise<void> {
+    const characterID = onlineCharacterID(), locationID = dockedNow();
+    const online = store.station.get().online, corporationID = online?.corporationID ?? null, corpRole = online?.corpRole ?? "0";
+    const generation = ++safetyReadGeneration;
+    if (!characterID || !locationID) { safetyDeliveriesSignal.set(null); return; }
+    let wraps: SafetyDeliveries["wraps"] = [], error: string | null = null;
+    try { wraps = await readSafetyDeliveries(bridgeAsk, characterID, locationID, safetyWrapNames, corporationID, corpRole); }
+    catch (cause) {
+      if (isSessionLost(cause)) throw cause;
+      error = errorWords(cause);
+    }
+    if (generation === safetyReadGeneration && onlineCharacterID() === characterID && dockedNow() === locationID
+      && store.station.get().online?.corporationID === corporationID && (store.station.get().online?.corpRole ?? "0") === corpRole) {
+      safetyDeliveriesSignal.set({ characterID, corporationID, corpRole, locationID, wraps, error });
+      if (!error) {
+        const present = new Set(wraps.map(wrap => wrap.row.itemID));
+        for (const [id, row] of safetyItemCache) if (row.typeID === 60 && row.locationID === locationID && !present.has(id)) safetyItemCache.delete(id);
+        rememberSafetyParents(wraps.map(wrap => wrap.row));
+      }
+    }
+  }
+
   async function loadInventory(): Promise<void> {
+    const cacheGeneration = safetyCacheGeneration;
     let panel: Awaited<ReturnType<typeof api.loadInventory>>;
     try {
       panel = await api.loadInventory(callOptions);
@@ -5988,6 +6396,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       hangar: decodeContainer(panel.hangar.list, panel.hangar.capacity, panel.hangar.error, panel.volumes),
       cargo: decodeContainer(panel.cargo.list, panel.cargo.capacity, panel.cargo.error, panel.volumes),
     });
+    await loadSafetyDeliveries();
+    if (cacheGeneration === safetyCacheGeneration) rememberSafetyParents([...store.inventory.get().hangar.rows, ...store.inventory.get().cargo.rows]);
   }
 
   // Run a mutation, then refresh the panel. A lost session is rethrown to
@@ -6026,7 +6436,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   ]);
   /** And CannotAddToQtyLimit (275 to 279), with what may yet be added: the refusals noRoomForAll answers. */
   const ONE_STACK_ANSWERED: ReadonlySet<string> = new Set([...ADD_ROOM_REFUSALS, "CannotAddToQtyLimit"]);
-  /** invControllers.StackAll (393 to 407): a container's password asked for. */
+  /** invControllers.StackAll393-407: the distinct legacy PermissionDenied branch (not the SC password proxy). */
   const STACK_KEPT: ReadonlySet<string> = new Set(["PermissionDenied"]);
 
   /** Used and capacity of a place as the page last read them; null where it has none, or has not read it. */
@@ -6133,8 +6543,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // Turn a transfer result into one honest sentence. A split is judged by the
   // source stack shrinking (it mints a NEW stack at the destination, so the
-  // requested itemID never appears there), and a decline with no reason is
-  // reported AS a decline with no reason.
+  // requested itemID never appears there). Items retained at source may have
+  // been skipped by the local cache or refused remotely; report custody only.
   function describeTransfer(
     result: { applied: boolean; moved: readonly number[]; declined: readonly number[] },
     requested: number,
@@ -6147,9 +6557,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return `Moved ${result.moved.length} of ${requested}.`;
     }
     if (result.applied) {
-      return `Moved ${result.moved.length} of ${requested}; the server declined the rest without giving a reason.`;
+      return `Moved ${result.moved.length} of ${requested}; ${result.declined.length} stayed in the source.`;
     }
-    return "The server did not move anything, and gave no reason.";
+    // invCache.MultiAdd1041-1056 can skip locally locked items without an RPC.
+    // A custody re-read establishes what stayed, not which layer declined it.
+    return "No items moved.";
   }
 
   /**
@@ -6218,13 +6630,22 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /**
-   * Stack All of the hangar or the ship's hold, by the client's own call on its inventory (bridge/inventoryWrites.ts),
-   * and only where the panel's rows of it have two stacks of a type, as the client asks nothing otherwise.
+   * Stack All of the hangar, a ship hold, a corporation division or an ordinary container, on its own inventory,
+   * through invCache's own listing, row lock checks, duplicate-type detection and shared local locks.
    */
-  async function stackPlaceNow(target: "hangar" | "cargo"): Promise<void> {
-    const inventory = store.get().inventory;
-    if (!hasSomethingToStack(target === "hangar" ? inventory.hangar.rows : inventory.cargo.rows)) return;
-    await stackAllCall(bridgeDo, inventoryAt({ kind: target }).inventory, target);
+  async function stackPlaceNow(target: StackPlace): Promise<void | false> {
+    const place = typeof target === "string" ? { kind: target } as const : target;
+    if (place.kind === "container" && (dockedNow() === null || ordinaryContainerStackPlace(store.inventory.get(), store.station.get().online?.characterID ?? null)?.itemID !== place.itemID)) return false;
+    // BaseInvContainer.StackAll383 checks BaseCorpContainer.oneWay before office/cache lookup.
+    if (place.kind === "corp" && !await askOneWayMove()) return false;
+    const destination = place.kind === "corp" ? await inventoryOfPlace(place) : inventoryAt(place);
+    await stackAllCall(inventoryMoves.act, destination.inventory, target);
+    if (place.kind === "corp") await loadCorpHangar();
+    if (place.kind === "container" && store.inventory.get().container?.itemID === place.itemID) await openContainer(place.itemID);
+    if (place.kind === "shipBay") {
+      const open = store.inventory.get().openShip;
+      if (open?.itemID === store.inventory.get().activeShipID) await openShipBays(open.itemID);
+    }
   }
 
   // Reload whatever places are currently on screen. A mutation can touch the
@@ -6234,8 +6655,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function refreshOpenPlaces(): Promise<void> {
     const current = store.get().inventory;
     await loadInventory();
-    if (current.container) {
-      await openContainer(current.container.itemID);
+    if (current.container && store.inventory.get().container?.itemID === current.container.itemID) {
+      const safety = safetyDeliveriesSignal.get();
+      await openContainer(current.container.typeID === 60 && safety && !safety.error
+        && !safety.wraps.some(wrap => wrap.row.itemID === current.container!.itemID) ? null : current.container.itemID);
     }
     if (current.corp.loaded) {
       await loadCorpHangar();
@@ -6349,6 +6772,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "inventory/action-error", message: null });
       if (outcome === null) return;
     } catch (error) {
+      if (failureCode(error) === "SESSION_REQUEST_RETIRED") throw error;
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
@@ -6365,7 +6789,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     await refreshOpenPlaces();
   }
 
+  let containerReadGeneration = 0;
   async function openContainer(containerID: number | null): Promise<void> {
+    const generation = ++containerReadGeneration;
     if (containerID === null) {
       store.apply({ type: "inventory/container", container: null });
       return;
@@ -6376,6 +6802,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const owningRow =
       current.hangar.rows.find((row) => row.itemID === containerID) ??
       current.cargo.rows.find((row) => row.itemID === containerID) ??
+      current.container?.rows.find((row) => row.itemID === containerID) ??
+      safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row ??
+      safetyItemCache.get(containerID) ??
       null;
     // What the container is, for the bridge to work its capacity out by: its row's type, or the type it was
     // opened with if it is the one open already (its row may have moved since). Never another container's.
@@ -6387,20 +6816,59 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       : current.container && current.container.itemID === containerID
         ? current.container.typeID
         : inSpace?.typeID ?? 0;
+    const ownName = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.name
+      ?? (current.container?.itemID === containerID ? current.container.name : undefined);
+    const safetyRow = safetyDeliveriesSignal.get()?.wraps.find(wrap => wrap.row.itemID === containerID)?.row;
+    const online = store.station.get().online;
+    if (owningRow) rememberSafetyParents([owningRow]);
+    if (knownTypeID === 60 && safetyRow && online?.corporationID && safetyRow.ownerID === online.corporationID) {
+      try {
+        // Original corporate tree/controller(None): one full List, no capacity query.
+        const raw = await bridgeAsk("invbroker", "List", [], null, containerID);
+        const listed = decodeInventoryRowsChecked(raw);
+        if (listed === null) throw new Error("The corporation Asset Safety inventory could not be read.");
+        const knownVolumes = (await api.loadTypeVolumes([...new Set(listed.map(row => row.typeID))], callOptions)).volumes;
+        const volumes: Record<string, number> = {};
+        for (const [typeID, volume] of Object.entries(knownVolumes)) if (typeof volume === "number") volumes[typeID] = volume;
+        const rows = decodeInventoryRows(raw, volumes);
+        const corporation = rows.length ? await bridgeAsk("corpRegistry", "GetCorporation", []) : null;
+        if (rows.length) await wordsNow(SAFETY_DIVISION_LABELS);
+        const divisions = safetyDivisionRows(rows, containerID, online.corporationID!, corporation, (key, own) => templateWords(key, {}, own));
+        const keptDivision = current.container?.itemID === containerID ? current.container.safety?.divisionID ?? null : null;
+        const selected = divisions.find(division => division.divisionID === keptDivision);
+        if (generation !== containerReadGeneration || store.station.get().online?.characterID !== online.characterID
+          || store.station.get().online?.corporationID !== online.corporationID || store.station.get().online?.corpRole !== online.corpRole
+          || dockedNow() !== safetyRow.locationID) return;
+        rememberSafetyParents(rows);
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: selected?.name ? selected.rows : [], capacity: null, hasCapacity: false, error: null,
+          safety: { corporationID: online.corporationID!, divisionID: selected?.divisionID ?? null, divisions } } });
+      } catch (cause) {
+        if (isSessionLost(cause)) throw cause;
+        if (generation !== containerReadGeneration) return;
+        store.apply({ type: "inventory/container", container: { itemID: containerID, typeID: 60, name: ownName,
+          rows: [], capacity: null, hasCapacity: false, error: errorWords(cause) } });
+      }
+      return;
+    }
     let reads: Awaited<ReturnType<typeof api.openContainer>>;
     try {
-      reads = await api.openContainer(containerID, callOptions, knownTypeID);
+      const scope = inventoryPasswordScope();
+      reads = await scope.retry(() => api.openContainer(containerID, scope.options, knownTypeID), "List", [], containerID);
     } catch (error) {
+      if (failureCode(error) === "SESSION_REQUEST_RETIRED") throw error;
       if (isSessionLost(error)) {
         stopLiveStream();
         store.apply({ type: "character/offline" });
         throw error;
       }
+      if (generation !== containerReadGeneration) return;
       store.apply({
         type: "inventory/container",
         container: {
           itemID: containerID,
           typeID: knownTypeID,
+          name: ownName,
           rows: [],
           capacity: null,
           error: errorWords(error),
@@ -6408,13 +6876,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       });
       return;
     }
+    if (generation !== containerReadGeneration) return;
+    const rows = decodeInventoryRows(reads.list, reads.volumes);
+    rememberSafetyParents(rows);
     store.apply({
       type: "inventory/container",
       container: {
         itemID: containerID,
         // What it was opened as: its row's type, the type it was open with, or its type in space.
         typeID: knownTypeID,
-        rows: decodeInventoryRows(reads.list, reads.volumes),
+        name: ownName,
+        rows,
         capacity: reads.capacity === null ? null : decodeCapacity(reads.capacity),
         hasCapacity: reads.hasCapacity,
         error: null,
@@ -6514,6 +6986,145 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       store.apply({ type: "flight/crimewatch", crimewatch });
     }
   }
+  function fittedTradeSlot(source: FittedTradeSource): FittingSlot {
+    if (!dockedNow()) throw new Error("Dock before offering fitted items in a trade.");
+    const fitting = store.fitting.get();
+    if (fitting.activeShipID !== store.inventory.get().activeShipID) throw new Error("The active ship's fitting changed.");
+    const slot = fitting.slots.find(slot => slot.module?.itemID === (source.kind === "fittedModule" ? source.itemID : source.moduleID));
+    if (!slot?.module || slot.present === false) throw new Error("That module is no longer fitted to this ship.");
+    if (source.kind === "fittedCharge") {
+      if (slotFlagOf(slot.family, slot.index) !== source.flagID || slot.module.charge?.typeID !== source.typeID) throw new Error("That charge is no longer loaded in this slot.");
+    } else if (slot.module.typeID !== source.typeID) throw new Error("That fitted module changed.");
+    return slot;
+  }
+  const directTrades = createDirectTrades({
+    ask: bridgeAsk, act: bridgeDo, characterID: onlineCharacterID,
+    name: id => resolvedName(store.names.get().resolved, "owner", id, "Unknown pilot"),
+    requestNames: ids => {
+      requestNames(ids.map(id => ({ kind: "owner" as const, id })));
+      requestWords(["UI/PVPTrade/TradeWith", "UI/PVPTrade/Accept", "UI/PVPTrade/OfferMoney", "UI/PVPTrade/MyCharacterOffers", "UI/PVPTrade/OtherCharacterOffers", "UI/PVPTrade/AcceptedHint", "UI/PVPTrade/TypeNameAndItemName", "UI/Messages/DirectTradeManifestMismatch", "UI/Common/Buttons/Cancel", "UI/Common/Name", "UI/Common/Quantity", "UI/Common/ISK"]);
+    },
+    primeItems: ids => requestNames(ids.map(id => ({ kind: "evelocation" as const, id }))),
+    manifestMismatch: () => store.words.get().templates["UI/Messages/DirectTradeManifestMismatch"] ?? "The trade contents changed.",
+    wealth: async () => {
+      const wealth = Number(toAmountString(await walletReads.wealth()));
+      if (!Number.isFinite(wealth)) throw new Error("The wallet did not provide the pilot's ISK balance.");
+      return wealth;
+    },
+    quantity: (min, max) => askQuantity({ min, max, value: 100, digits: 2, hintLabel: "UI/Common/SetQtyBetween", hint: "", hintArgs: { min: fmtAmt(min), max: fmtAmt(max) } }),
+    itemQuantity: max => askQuantity({ min: 0, max, value: max, hintLabel: "UI/Common/NoMoreUnits", hint: "There are no more units available." }),
+    source: async (itemID, place) => {
+      if (!dockedNow()) throw new Error("Dock before offering inventory in a trade.");
+      if (place.kind === "container") {
+        // invCache.AcceptPossibleRemovalTax754-780 walks cached parents before
+        // asking for a recovery price. A personal container directly in the
+        // current hangar/active cargo has no asset-wrap ancestor and asks none.
+        // Keep deeper/corporate sources unavailable until their ancestry and
+        // server recovery/access paths have been ported and verified.
+        const inventory = store.inventory.get(), dockedAt = dockedNow();
+        const parent = [...inventory.hangar.rows, ...inventory.cargo.rows].find(row => row.itemID === place.itemID);
+        if (!parent || parent.ownerID !== onlineCharacterID()
+            || ![dockedAt, inventory.activeShipID].includes(parent.locationID ?? null)) {
+          throw new Error("Trading from this container's ancestry is not available yet.");
+        }
+        if (parent.typeID === 60) throw new Error("Trading directly from Asset Safety is not available yet. Recover these items to your hangar first.");
+      }
+      const all = rowsAt(place);
+      const row = all?.find(row => row.itemID === itemID);
+      if (!row) throw new Error("That item is no longer in the source inventory.");
+      const selected = store.inventory.get().selection;
+      const rows = selected.includes(itemID) ? all!.filter(row => selected.includes(row.itemID)) : [row];
+      // AddItems takes the first actual row's location, rather than looking
+      // the office up again. Ship-bay projections identify their enclosing
+      // active ship separately from the projected item rows.
+      const sourceID = row.locationID ?? (place.kind === "shipBay" ? inventoryAt(place).liesIn : null);
+      if (!sourceID) throw new Error("The source inventory did not identify where the item is located.");
+      return { rows, sourceID };
+    },
+    fittedType: source => {
+      const module = fittedTradeSlot(source).module!;
+      return source.kind === "fittedCharge" ? module.charge!.typeID : module.typeID;
+    },
+    unloadFitted: async (containerID, source, current) => {
+      const guard = callOptions.captureRequestGuard!(), slot = fittedTradeSlot(source), place = ammoSession();
+      const valid = () => { guard(); return current() && ammoSession().shipID === place.shipID && dockedNow() === place.dockedAt; };
+      if (source.kind === "fittedModule") {
+        // DogmaLocation1077-1104 binds the destination inventory and reads its
+        // self item before UnloadAmmo, then Add has no kwargs for Trade.
+        await unloadModuleToContainerCall(bridgeDo, fittedNow, place, source.itemID, heldWeaponBanks(), askClearGroup,
+          { inventory: containerID, containerItemID: containerID, flag: null }, async () => {
+            if (!valid()) return false;
+            const item = await bridgeAsk("invbroker", "GetSelfInvItem", [], null, containerID);
+            if (!valid()) return false;
+            if (Number(unwrapLong(readRowField(item, "itemID"))) !== containerID) throw new Error("The trade inventory did not identify itself.");
+            fittedTradeSlot(source);
+            return true;
+          });
+      } else {
+        // UnloadAmmoToContainer1106-1134 resolves the module in the source
+        // slot before unloading to (tradeID, offering owner, None), quantityNone.
+        const flag = slotFlagOf(slot.family, slot.index)!;
+        // Slot listings also contain tuple-identified charges. The ordinary
+        // inventory decoder drops those; only the exact numeric module is
+        // needed here, rather than certifying every row as an inventory stack.
+        const listed = decodeInventoryRows(await bridgeAsk("invbroker", "List", [], { flag }, place.shipID));
+        if (!valid()) return;
+        if (!listed.some(row => row.itemID === source.moduleID && row.flagID === flag && row.typeID === slot.module!.typeID && row.locationID === place.shipID)) throw new Error("The source slot did not identify its module.");
+        fittedTradeSlot(source);
+        const outcome = await unloadChargeToContainerCall(bridgeDo, place, source.moduleID, heldWeaponBanks(),
+          error => refusalDialogOf(error)?.dialog === "NotEnoughCargoSpace", [containerID, place.characterID, null]);
+        if (outcome.kind === "bankWithoutRoom") sayDialog("NotEnoughCargoSpaceToUnloadBank", null, "That place has too little room left for the charges of every weapon in the bank.");
+      }
+      if (!valid()) return;
+      await loadFitting();
+      await refreshOpenPlaces();
+    },
+    activeShipID: () => store.inventory.get().activeShipID,
+    restrictions: async types => {
+      const lists: Record<number, readonly number[] | null> = {};
+      for (let at = 0; at < types.length; at += 32) Object.assign(lists, await api.loadTypeListsHolding(types.slice(at, at + 32), [36, 142, 338], callOptions));
+      return lists;
+    },
+    volumes: async types => (await api.loadTypeVolumes(types, callOptions)).volumes,
+    confirm: key => askDialog(key, null, key === "ConfirmCancelTrade" ? "Cancel this trade?" : "Accept the offer containing a ship?", "okcancel"),
+    say: sayDialog,
+    report: error => { if (failureCode(error) !== "SESSION_REQUEST_RETIRED" && !sayRefusalDialog(error, "The trade could not be updated.")) sayDialog("CustomNotify", { type: "dict", entries: [["notify", errorWords(error)]] }, errorWords(error)); },
+  });
+  async function startDirectTrade(characterID: number): Promise<void> {
+    const online = store.station.get().online;
+    // CharacterChecker.OfferTradeWithCharacter281-290 / IsGuest403-408.
+    if (!online || !dockedNow() || characterID === online.characterID || isNpcOwner(characterID)
+        || !store.station.get().guests.some(guest => guest.characterID === characterID)) return;
+    try { await directTrades.start(characterID); }
+    catch (error) { if (!sayRefusalDialog(error, "The trade could not be started.")) throw error; }
+  }
+  const duelInvitationSignal = createSignal<DuelInvitation | null>(null);
+  let duelInvitationN = 0;
+  async function startDuel(characterID: number): Promise<void> {
+    // Native StartDuel's guard tests dictionary membership, including ongoing -1.
+    if (store.flight.get().crimewatch?.states.engagements.some(entry => Number(entry.characterID) === characterID)) return;
+    try { await startDuelChallenge(bridgeDo, characterID); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
+  }
+  function expireDuel(n: number): void {
+    const invitation = duelInvitationSignal.get();
+    if (invitation?.n === n) duelInvitationSignal.set({ ...invitation, expired: true });
+  }
+  function closeDuel(n: number): void { if (duelInvitationSignal.get()?.n === n) duelInvitationSignal.set(null); }
+  async function answerDuel(n: number, accept: boolean, block: boolean): Promise<void> {
+    const invitation = duelInvitationSignal.get();
+    if (!invitation || invitation.n !== n || invitation.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    const current = callOptions.captureRequestGuard!();
+    if (accept && !await askDialog("AskConfirmDuel", null, "Are you sure you want to accept the duel?", "yesno", { suppressAnswer: "yes" })) return;
+    current();
+    if (duelInvitationSignal.get()?.n !== n || duelInvitationSignal.get()?.expired) return;
+    if (BigInt(invitation.expiry) <= BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n) { expireDuel(n); return; }
+    duelInvitationSignal.set(null);
+    if (block) void blockOwners([invitation.characterID]).catch(cause => { if (failureCode(cause) === "SESSION_REQUEST_RETIRED") return; if (!sayRefusalDialog(cause, errorWords(cause))) sayDialog("CustomInfo", { type: "dict", entries: [["info", errorWords(cause)]] }, errorWords(cause)); });
+    try { await respondToDuelChallenge(api.bridgeDo({ ...callOptions, captureRequestGuard: () => current }), invitation, accept); }
+    catch (cause) { if (!sayRefusalDialog(cause, errorWords(cause))) throw cause; }
+  }
 
   // clone_grade_svc: the client asks the account's clone grade as it logs in,
   // and keeps it. The BFF's transport asked it at the pilot's login; the page
@@ -6566,19 +7177,27 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // Offices tab is shown, and again at each office rented or given up. The
   // page lists them when the player asks, and from then on at each notice. A
   // read that answers after the pilot has gone elsewhere is not shown.
-  // The server says an office changed twice over, to the station and to the
-  // corporation, and the client's panel does not load again while it is
-  // loading (offices.py, _load): `listingStationOffices` is that.
+  // Duplicate rental notices are coalesced by their handler, as the recorded
+  // pair is. Applicant changes can queue another load through OfficesPanel's
+  // LOAD_PENDING loop, so a join does not lose its new corporation's buttons.
   let listingStationOffices = false;
+  let stationOfficesPending = false;
   async function loadStationOffices(): Promise<void> {
+    // OfficesPanel._load58-72 coalesces a notice during loading into another
+    // load, rather than losing a corporation change behind an older reply.
+    if (listingStationOffices) { stationOfficesPending = true; return; }
     const where = () => store.station.get().online?.stationID ?? store.station.get().online?.structureID ?? null;
     const askedAt = where();
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
     listingStationOffices = true;
     try {
-      const offices = await api.loadStationOffices(callOptions);
-      if (where() === askedAt) {
-        store.apply({ type: "station/offices", offices });
-      }
+      do {
+        stationOfficesPending = false;
+        const offices = await api.loadStationOffices(scoped);
+        current();
+        if (where() === askedAt) store.apply({ type: "station/offices", offices });
+      } while (stationOfficesPending && where() === askedAt);
     } finally {
       listingStationOffices = false;
     }
@@ -9398,7 +10017,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
   let quantityAnswer: ((quantity: number | null) => void) | null = null;
 
-  /** Asks the client's quantity question; a whole number in its range on OK, null on Cancel. */
+  /** QtyPopup: an integer by default, or a float with digits; null on Cancel. */
   function askQuantity(ask: Omit<QuantityAsk, "n">): Promise<number | null> {
     quantityAnswer?.(null);
     dialogsSaidCount += 1;
@@ -9407,7 +10026,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       quantityAnswer = (quantity) => {
         quantityAnswer = null;
         quantityAskedSignal.set(null);
-        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, Math.trunc(quantity))));
+        const value = (ask.digits ?? 0) === 0 ? Math.trunc(quantity ?? 0) : quantity ?? 0;
+        resolve(quantity === null || !Number.isFinite(quantity) ? null : Math.min(ask.max, Math.max(ask.min, value)));
       };
       quantityAskedSignal.set({ n, ...ask });
     });
@@ -9423,6 +10043,42 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
   // The client's ship naming window (shipNameDialog.py, prompt_rename_ship), one at a time; a newer one ends it.
   const shipNameAskedSignal = createSignal<ShipNameAsk | null>(null);
+  const inventoryPasswordAskedSignal = createSignal<InventoryPasswordAsk | null>(null);
+  const inventoryPasswordWaiters = new Set<(text: string | null) => void>();
+  let inventoryPasswordAnswer: ((text: string | null) => void) | null = null;
+
+  function retireInventoryPasswords(): void {
+    inventoryPasswordEpoch++;
+    inventoryPasswordAskedSignal.set(null);
+    inventoryPasswordAnswer = null;
+    for (const finish of inventoryPasswordWaiters) finish(null);
+  }
+
+  async function askInventoryPassword(type: InventoryPasswordType, current: () => void): Promise<string | null> {
+    current();
+    await wordsNow(["UI/Inventory/ItemActions/AccessPasswordRequiredCaption", "UI/Inventory/ItemActions/PleaseEnterAccessPassword",
+      "UI/Inventory/ItemActions/ConfigurationPasswordRequiredCaption", "UI/Inventory/ItemActions/PleaseEnterConfigurationPassword",
+      "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel", "UI/Common/PleaseTypeSomething"]);
+    current();
+    return new Promise(resolve => {
+      const finish = (text: string | null) => { inventoryPasswordWaiters.delete(finish); resolve(text); };
+      inventoryPasswordWaiters.add(finish);
+      // Window.Open3186/ShowDialog: reuse setNewName's field/caption; the most recent modal waiter receives Confirm.
+      // Older overlapping waiters remain pending until this pilot retires, rather than inventing a queue or fanout.
+      inventoryPasswordAnswer = finish;
+      if (inventoryPasswordAskedSignal.get() === null) inventoryPasswordAskedSignal.set({ n: ++dialogsSaidCount, type });
+    });
+  }
+
+  function answerInventoryPassword(n: number, text: string | null): void {
+    if (inventoryPasswordAskedSignal.get()?.n !== n || inventoryPasswordAnswer === null) return;
+    const accepted = text === null ? null : inventoryPasswordText(text);
+    if (text !== null && accepted === null) return;
+    const finish = inventoryPasswordAnswer;
+    inventoryPasswordAnswer = null;
+    inventoryPasswordAskedSignal.set(null);
+    finish(accepted);
+  }
   // The client's books window (MissingSkillbooksWnd), one at a time; and what it has bought, which its end answers.
   const skillBooksAskedSignal = createSignal<SkillBooksAsk | null>(null);
   const gatewayNoticesSignal = createSignal<GatewayNotice | null>(null);
@@ -12200,21 +12856,91 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     } else await buyFitOf(open.fitting);
   }
 
-  /**
-   * _get_save_sub_menu_data (123 to 131): whether the Save menu offers Save for Alliance, a pilot in an alliance whose
-   * executor is its corporation (alliance.GetAlliance(session.allianceid).executorCorpID: allianceRegistry.GetAlliance on
-   * the alliance's moniker).
-   */
-  async function corporationShowInfo(corporationID: number): ReturnType<AppFlow["corporationShowInfo"]> {
-    const info = corporationPublicInfoOf(await bridgeAsk("corpmgr", "GetPublicInfo", [corporationID]).catch(() => null));
-    if (info === null) return null;
-    const [aggression, enlistmentFactions] = await Promise.all([
-      bridgeAsk("corpmgr", "GetAggressionSettings", [corporationID]).then(aggressionSettingsOf).catch(() => null),
-      isNpcCorporation(corporationID)
-        ? Promise.resolve(null)
-        : bridgeAsk("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]).then(enlistmentFactionsOf).catch(() => null),
-    ]);
-    return { info, aggression, enlistmentFactions, readAt: BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n };
+  /** CorporationInfoWindow.reconstruct_info_window49-51 and infosvc.UpdateDataCorp's attributes. */
+  async function corporationShowInfo(corporationID: number, reads?: InfoReadScope, header?: (info: CorporationPublicInfo) => void): ReturnType<AppFlow["corporationShowInfo"]> {
+    const finish = reads?.begin();
+    // Fence dispatch in the shared lane, but keep the pilot's notification sink:
+    // retiring one window must not discard notices accompanying an in-flight RPC.
+    const infoAsk = (signal?: AbortSignal): Ask => api.bridgeAsk({ ...callOptions, fetch: (input, init) => {
+      reads?.assertCurrent();
+      // Keep this call's existing transport deadline. Only a native scalar
+      // cache owner receives tasklet retirement, not every operation of a view.
+      return (callOptions.fetch ?? pageFetch())(input, signal
+        ? { ...init, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) } : init);
+    } }, serverNowMs => { serverClockAheadMs = serverNowMs - Date.now(); });
+    const ask = reads ? infoAsk() : bridgeAsk;
+    try {
+      reads?.assertCurrent();
+      let answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+      // CorporationInfoWindow49-51 calls its parent only after a successful
+      // public-info reply; that parent assigns even if the returned record is None.
+      reads?.identify();
+      let shares: JsonValue | undefined;
+      let retried = false;
+      if (answer === null) {
+        // Corporation.update_description185-204 retries a None public record.
+        // The assignment evaluates its shares RHS even if that retry is None.
+        answer = await ask("corpmgr", "GetPublicInfo", [corporationID]);
+        const row = await corporationRecords.get(ask, corporationID, () => reads?.assertCurrent());
+        shares = row.fields.shares;
+        if (answer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'shares'"), { name: "AttributeError", code: "INFO_CORPORATION_SHARES_UNASSIGNED" });
+        retried = true;
+      }
+      let info = corporationPublicInfoOf(answer);
+      if (info === null) throw Object.assign(new Error("The corporation public record has no corporationID."), { code: "INFO_CORPORATION_PUBLIC_INVALID" });
+      if (retried) info = { ...info, shares: typeof shares === "string" ? shares : corporationShareNumber(shares) };
+      // InfoWindowMonolith1102-1114 constructs the header before UpdateWindowData;
+      // the hidden scroll/edit do not become main tabs if an attribute read fails.
+      header?.(info);
+      reads?.construct();
+      // infosvc.UpdateDataCorp1226-1246 reads friendly fire before enlistments.
+      // Neither read catches RPC exceptions: construction and caption/history
+      // completion stop, and the window's exception handler receives the error.
+      const aggressionAnswer = await corporationAggression.get(reads ? infoAsk(reads.signal) : ask, corporationID, () => reads?.assertCurrent());
+      // The native status consumer calls methods on the cached raw object.
+      // A cached None fails there on every attempt; it is not an omitted row.
+      if (aggressionAnswer === null) throw Object.assign(new Error("'NoneType' object has no attribute 'IsFriendlyFireLegalAtTime'"), { name: "AttributeError", code: "INFO_CORPORATION_AGGRESSION_NONE" });
+      // GetCorpFriendlyFireStatus captures now before either status method,
+      // including their conditional helper calls and any decoding failures.
+      const readAt = BigInt(Math.trunc(serverNow())) * 10000n + 116444736000000000n;
+      assertCorpAggressionStatusMethod(aggressionAnswer);
+      const aggression = aggressionSettingsOf(aggressionAnswer, readAt);
+      reads?.assertCurrent();
+      let enlistmentFactions: readonly number[] | null = null;
+      let enlistmentFactionNames: readonly (string | null)[] | null = null;
+      if (!isNpcCorporation(corporationID)) {
+        const answer = await ask("fwCharacterEnlistmentMgr", "GetCorpAllowedEnlistmentFactions", [corporationID]);
+        // UpdateDataCorp iterates this answer directly, without a None fallback.
+        if (answer === null) throw Object.assign(new TypeError("'NoneType' object is not iterable"), { code: "INFO_CORPORATION_ENLISTMENT_NONE" });
+        const keys = enlistmentFactionsOf(answer);
+        if (keys !== null) {
+          const ids: number[] = [], names: (string | null)[] = [];
+          for (const id of keys) {
+            // UpdateDataCorp's list comprehension performs Get/int/Prime for
+            // one owner before converting the next key. Never filter failures
+            // or batch later owners ahead of a bad key or missing record.
+            reads?.assertCurrent();
+            const records = await api.readEveOwners([id], reads ? { ...callOptions, signal: reads.signal, fetch: (input, init) => {
+              reads.assertCurrent(); return (callOptions.fetch ?? pageFetch())(input, init);
+            } } : callOptions);
+            reads?.assertCurrent();
+            const row = records[String(id)];
+            if (row === null) throw Object.assign(new Error(`('RecordNotFound', ${id})`), { name: "KeyError", code: "INFO_CORPORATION_ENLISTMENT_OWNER_MISSING", args: ["RecordNotFound", id] });
+            ids.push(id); names.push(row!.name);
+          }
+          enlistmentFactions = ids;
+          // Native sorted: None precedes strings; an empty/None name remains
+          // a row, whereas only an empty iterable gets the no-factions label.
+          enlistmentFactionNames = names.sort((a, b) => a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1);
+        }
+      }
+      reads?.complete();
+      return { stage: "complete", info, aggression, enlistmentFactions, enlistmentFactionNames, readAt };
+    } finally {
+      finish?.();
+      // An expected retirement is not an empty or partially successful read.
+      reads?.assertCurrent();
+    }
   }
 
   async function allianceShowInfo(allianceID: number): ReturnType<AppFlow["allianceShowInfo"]> {
@@ -14114,6 +14840,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   const NO_WALLET_JOURNAL: WalletJournalRead = { year: null, month: null, loaded: false, lines: [], kinds: new Map(), journalMessageIDs: null, error: null };
   const walletJournalSignal = createSignal<WalletJournalRead>(NO_WALLET_JOURNAL);
   let walletJournalGeneration = 0;
+  const NO_CORP_WALLET_JOURNAL: CorpWalletJournalRead = { ...NO_WALLET_JOURNAL, accountKey: 1000, corporationID: null };
+  const corpWalletJournalSignal = createSignal<CorpWalletJournalRead>(NO_CORP_WALLET_JOURNAL);
+  let corpWalletJournalGeneration = 0;
   let journalMessagesRead: Promise<Readonly<Record<string, number>> | null> | null = null;
   const journalMessages = (): Promise<Readonly<Record<string, number>> | null> => {
     journalMessagesRead ??= api.loadAccountingEntryTypes(callOptions).then(
@@ -14144,6 +14873,40 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
       error: entries.status === "rejected" ? (entries.reason instanceof Error ? entries.reason.message : String(entries.reason)) : null,
     });
+  }
+
+  function corporateJournalAccountKey(): number {
+    try {
+      const key = Number(settingsStorage?.getItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`) ?? 1000);
+      return Number.isInteger(key) && key >= 1000 && key <= 1006 ? key : 1000;
+    } catch { return 1000; }
+  }
+
+  async function loadCorpWalletJournal(accountKey: number = corporateJournalAccountKey(),
+    year: number | null = corpWalletJournalSignal.get().year, month: number | null = corpWalletJournalSignal.get().month): Promise<void> {
+    const online = store.station.get().online, generation = ++corpWalletJournalGeneration;
+    if (!online?.corporationID || !canViewCorporateJournal(online.corpRole)) {
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
+      return;
+    }
+    if (!Number.isInteger(accountKey) || accountKey < 1000 || accountKey > 1006) throw new Error("Choose a corporation wallet division.");
+    // CorpTransactionsPanel's accountkey is a user setting, independent of
+    // the active spending division (session.corpAccountKey).
+    try { settingsStorage?.setItem(`evejs.user.${store.session.get().accountID ?? 0}.accountkey`, String(accountKey)); } catch { /* Keep the live choice. */ }
+    const held = corpWalletJournalSignal.get();
+    if (held.accountKey !== accountKey || held.year !== year || held.month !== month || held.corporationID !== online.corporationID) {
+      corpWalletJournalSignal.set({ ...NO_CORP_WALLET_JOURNAL, accountKey, year, month, corporationID: online.corporationID });
+    }
+    const [entries, kinds, messages] = await Promise.allSettled([walletReads.corporateJournal(accountKey, year, month), walletReads.entryKinds(), journalMessages()]);
+    if (generation !== corpWalletJournalGeneration || store.station.get().online?.corporationID !== online.corporationID
+      || store.station.get().online?.corpRole !== online.corpRole) return;
+    for (const each of [entries, kinds]) if (each.status === "rejected" && isSessionLost(each.reason)) throw each.reason;
+    const readable = entries.status === "fulfilled" && isListValue(entries.value);
+    corpWalletJournalSignal.set({ accountKey, corporationID: online.corporationID, year, month, loaded: true,
+      lines: entries.status === "fulfilled" ? corporateJournalLines(decodeJournalEntries(entries.value)) : [],
+      kinds: kinds.status === "fulfilled" ? decodeEntryKinds(kinds.value) : held.kinds,
+      journalMessageIDs: messages.status === "fulfilled" ? messages.value : null,
+      error: entries.status === "rejected" ? errorWords(entries.reason) : !readable ? "The corporation journal could not be read." : kinds.status === "rejected" ? errorWords(kinds.reason) : null });
   }
 
   // The wallet's Overview tab (bridge/walletOverview.ts): the last thirty days' journal with the lines derived from it
@@ -14856,43 +15619,714 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return roles;
   }
   let configEnabledValues: Promise<readonly string[]> | null = null;
+  const corporationApplicationsChangedSignal = createSignal(0);
+  const corporationDecorationsChangedSignal = createSignal(0);
+  const medalDesignerSignal = createSignal<{ readonly n: number; readonly instance: number; readonly characterID: number; readonly corporationID: number } | null>(null);
+  let medalDesignerRequests = 0;
+  function showMedalDesigner(): void {
+    const online = store.station.get().online;
+    if (!online?.corporationID) return;
+    const previous = medalDesignerSignal.get(), n = ++medalDesignerRequests;
+    medalDesignerSignal.set({ n, instance: previous?.characterID === online.characterID ? previous.instance : n, characterID: online.characterID, corporationID: online.corporationID });
+  }
+  function closeMedalDesigner(): void { cancelCorporationWalletChoice(); medalDesignerSignal.set(null); }
+  async function corporationDecorationCreationEnabled(): Promise<boolean> {
+    // CorpDecorations.Load39-43 and globalConfig.GetGlobalConfigBooleanValue:
+    // PersonnelManager specifically, then the held login config (default off).
+    if ((BigInt(store.station.get().online?.corpRole ?? "0") & 128n) === 0n) return false;
+    const key = "content_compliance_control_system_enabled";
+    const config = await api.getGlobalConfig([key], callOptions);
+    const value = config.values[key];
+    return value == null || !/^[+-]?\d+$/.test(String(value).trim()) || BigInt(String(value).trim()) === 0n;
+  }
+  const corporationWalletChoiceSignal = createSignal<CorporationWalletChoice | null>(null);
+  let corporationWalletAnswer: ((accountKey: number | null) => void) | null = null;
+  function cancelCorporationWalletChoice(): void { corporationWalletAnswer?.(null); }
+  function selectCorporationWallet(n: number, index: number): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !Number.isInteger(index) || !choice.rows[index]) return;
+    corporationWalletChoiceSignal.set({ ...choice, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationWallet(n: number, confirmed: boolean): void {
+    const choice = corporationWalletChoiceSignal.get();
+    if (choice?.n !== n || !corporationWalletAnswer) return;
+    if (!confirmed) { corporationWalletAnswer(null); return; }
+    if (choice.selectedIndex !== null) corporationWalletAnswer(choice.rows[choice.selectedIndex]!.accountKey);
+  }
+  // walletConst.corpWalletRoles, appConst340-346: take1..take7, not Director
+  // or Accountant as an implicit substitute for these division access bits.
+  function accessibleCorporationWallets(): number[] {
+    const roles = BigInt(store.station.get().online?.corpRole ?? "0");
+    return Array.from({ length: 7 }, (_, index) => index).filter(index => (roles & 1n << BigInt(27 + index)) !== 0n).map(index => index + 1000);
+  }
+  async function selectCorporationWalletDivision(scope: MemberOperation): Promise<void> {
+    const accounts = accessibleCorporationWallets();
+    // Native list comprehension reads division names only when it has choices.
+    const corporation = accounts.length ? await scope.ask("corpRegistry", "GetCorporation", []) : null; scope.current();
+    const ordinals = ["Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
+    const labels = ["UI/Corporations/Common/CorporateDivisionMasterWallet", ...ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`)];
+    await wordsNow([...labels, "UI/Wallet/WalletWindow/SelectDivision", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "/Carbon/UI/Controls/Common/NoItem", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]); scope.current();
+    const rows = accounts.map(accountKey => {
+      const raw = accountKey === 1000 ? null : memberField(corporation, `walletDivision${accountKey - 999}`);
+      const name = typeof raw === "string" ? raw : raw && typeof raw === "object" && "value" in raw && typeof raw.value === "string" ? raw.value : "";
+      return { accountKey, name: name || templateWords(labels[accountKey - 1000]!, {}, accountKey === 1000 ? "Master Wallet" : `Wallet Division ${accountKey - 999}`) };
+    });
+    const missing = templateWords("UI/Control/ListWindow/MustSelectError", { num: 1 }, "Select one item.");
+    const selectionError = templateWords("UI/Control/ListWindow/DisplayError", { errorMessage: missing }, missing);
+    cancelCorporationWalletChoice();
+    const accountKey = await new Promise<number | null>(resolve => {
+      corporationWalletAnswer = key => { corporationWalletAnswer = null; corporationWalletChoiceSignal.set(null); resolve(key); };
+      // uix.ListWnd defaults ordered0; walletUtil sorts by account ID, not name.
+      corporationWalletChoiceSignal.set({ n: ++dialogsSaidCount, rows, selectedIndex: null, selectionError });
+    });
+    scope.current();
+    if (accountKey !== null) { await scope.write("corpRegistry", "SetAccountKey", [accountKey], null, scope.online.corporationID); scope.current(); }
+  }
+  async function prepareCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<"ready" | "missing" | "refused"> {
+    const scope = captureMemberOperation(current), prefix = "UI/Corporations/CreateDecorationWindow/";
+    try {
+      await wordsNow([...["DecorationName", "Description", "Ribbon", "Medal", "ActiveWalletDivision"].map(key => prefix + key), "UI/Map/StarMap/lblBoldName"]); scope.current();
+      const missing: string[] = [];
+      if (!title) missing.push(templateWords(prefix + "DecorationName", {}, "Name"));
+      if (!description) missing.push(templateWords(prefix + "Description", {}, "Description"));
+      if (!graphics.some(row => row[0] === 1)) missing.push(templateWords(prefix + "Ribbon", {}, "Ribbon"));
+      if (!graphics.some(row => row[0] === 2)) missing.push(templateWords(prefix + "Medal", {}, "Medal"));
+      const activeLabel = templateWords(prefix + "ActiveWalletDivision", {}, "Active Wallet Division");
+      const key = store.station.get().online?.corpAccountKey ?? null;
+      if (key !== null && (key < 1000 || key > 1006)) throw new Error("The active corporation wallet division is unknown.");
+      if (key === null || !accessibleCorporationWallets().includes(key)) {
+        if (await askDialog("SelectWalletDivision", null, "Select an active corporation wallet division?")) { scope.current(); await selectCorporationWalletDivision(scope); }
+        else missing.push(activeLabel);
+      }
+      scope.current();
+      // SubmitData checks only None after the selector. Cancelling with a
+      // non-None inaccessible key does not add another access refusal.
+      if (store.station.get().online?.corpAccountKey == null && !missing.includes(activeLabel)) missing.push(activeLabel);
+      if (missing.length) {
+        const fields = formatTemplate(store.words.get().templates["UI/Map/StarMap/lblBoldName"] ?? "<b>{name}</b>", { name: missing.join(", ") }, { nameOf: () => "" });
+        sayDialog("GenericMissingInfo", { type: "dict", entries: [["fields", fields]] }, `Missing information: ${missing.join(", ")}`); return "missing";
+      }
+      return "ready";
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return "refused"; throw error; }
+  }
+  const corporationApplicationsRequestedSignal = createSignal(0);
+  function personalApplicationSetting(name: string): string {
+    return `evejs.corporationApplications.${onlineCharacterID()}.${name}`;
+  }
+  function corporationApplicationsExpanded(applicationID?: number | null): number | null {
+    try {
+      const key = personalApplicationSetting("corporation_applications_expanded.true");
+      if (applicationID !== undefined) settingsStorage?.setItem(key, JSON.stringify(applicationID));
+      const value: unknown = JSON.parse(settingsStorage?.getItem(key) ?? "null");
+      return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+    } catch { return applicationID ?? null; }
+  }
+  async function corporationApplications(): Promise<readonly CorporationApplication[]> {
+    const current = callOptions.captureRequestGuard!();
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
+    let old = false;
+    try { old = JSON.parse(settingsStorage?.getItem(personalApplicationSetting(`applicationsShowOld_${onlineCharacterID()}`)) ?? "false") === true; } catch { /* Native default. */ }
+    const answer = await api.bridgeAsk(scoped)("corpRegistry", old ? "GetMyOldApplications" : "GetMyApplications", []);
+    current();
+    const applications = corporationApplicationsOf(answer, old);
+    // GetCorpApplicationEntries126-151 primes the corporation names before
+    // constructing entries (whose CorpIcon subsequently asks for its logo).
+    await memberNames({ current, options: scoped }, [...new Set(applications.map(row => row.corporationID))].map(id => ({ kind: "owner" as const, id })));
+    current(); return applications;
+  }
+  let applicationWork = Promise.resolve();
+  async function corporationApplicationDecision(application: CorporationApplication, status: 2 | 3 | 7): Promise<void> {
+    const scope = captureMemberOperation(), pilotCurrent = callOptions.captureRequestGuard!();
+    if (application.characterID !== scope.online.characterID || applicationEnded(application.status) || status === 2 && !applicationAcceptable(application.status) || status === 3 && application.status !== 8) return;
+    if (status === 7) {
+      await wordsNow(["dialog:WithdrawApplication/title", "dialog:WithdrawApplication/body"]); scope.current();
+      if (!await askDialog("WithdrawApplication", null, "Withdraw this corporation application?")) return;
+    }
+    scope.current();
+    // bco_applications141 TempLock: serialize decisions; no session cooldown.
+    const previous = applicationWork;
+    let release!: () => void;
+    applicationWork = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous; scope.current();
+      let sent = false;
+      const send = callOptions.fetch ?? pageFetch();
+      const mutationOptions: api.ApiOptions = { ...scope.options,
+        captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+        fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+      };
+      await api.bridgeDo(mutationOptions)("corpRegistry", "UpdateApplicationOffer", [application.applicationID, application.characterID, application.corporationID, application.applicationText, status, "", null], null, scope.online.corporationID);
+      // An intended acceptance changes corpid before its None reply. The
+      // personal panel belongs to the pilot, and survives that successful join.
+      pilotCurrent();
+    } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    finally { release(); }
+  }
   const memberDetailsSignal = createSignal<{ readonly characterID: number; readonly n: number } | null>(null);
   let memberDetailsRequests = 0;
   function showMemberDetails(characterID: number): void { memberDetailsSignal.set({ characterID, n: ++memberDetailsRequests }); }
+  function memberDetailsPanel(panel?: "general" | "roles" | "titles" | "summary"): "general" | "roles" | "titles" | "summary" {
+    // TabGroup.Startup/AutoSelect: settings.user.tabgroups editmemberdialog remembers its selected panel.
+    const key = "evejs-web-user-ui:editmemberdialog";
+    try {
+      if (panel !== undefined) globalThis.localStorage?.setItem(key, panel);
+      const kept = panel ?? globalThis.localStorage?.getItem(key);
+      if (kept === "roles" || kept === "titles" || kept === "summary") return kept;
+    } catch { /* Use the first enabled native panel when settings cannot be read. */ }
+    return panel ?? "general";
+  }
+  const memberLifetimes = new WeakMap<() => void, (() => void) | undefined>();
+  function captureMemberOperation(lifetime?: () => void) {
+    lifetime?.();
+    const windowCurrent = lifetime && memberLifetimes.has(lifetime) ? memberLifetimes.get(lifetime) : lifetime;
+    const online = store.station.get().online;
+    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const generation = corporationMembershipGeneration, pilot = callOptions.captureRequestGuard!();
+    const current = () => {
+      pilot(); windowCurrent?.();
+      if (generation !== corporationMembershipGeneration || store.station.get().online?.corporationID !== online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This member window belongs to the pilot's previous corporation.", 0);
+    };
+    current();
+    memberLifetimes.set(current, windowCurrent);
+    const scoped = { ...callOptions, captureRequestGuard: () => current };
+    return { online: { ...online, corporationID: online.corporationID }, current, options: scoped, ask: api.bridgeAsk(scoped), write: api.bridgeDo(scoped) };
+  }
+  type MemberOperation = ReturnType<typeof captureMemberOperation>;
+  async function corporationAdministration(current?: () => void): Promise<CorporationAdministration> {
+    const scope = captureMemberOperation(current), roles = BigInt(scope.online.corpRole ?? "0");
+    // corporationWindow470-476, corporation.common.roles: administration is
+    // any admin role OR any of the four locally computed grantable masks.
+    const admin = (roles & 34359744897n) !== 0n;
+    if ((roles & 128n) !== 0n) return { visible: true, findMembers: true, director: (roles & 1n) !== 0n };
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const rawMember = await readCorporationMember(scope.online.characterID, scope);
+    // bco_members.GetMyGrantableRoles also accepts an absent member row.
+    if (rawMember === null) return { visible: admin, findMembers: false, director: (roles & 1n) !== 0n };
+    const mine = corporationMemberOf(rawMember);
+    const ceo = memberInteger(corporation, "ceoID") === BigInt(scope.online.characterID);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    const titles = !ceo && (mine.masks.roles & 1n) === 0n && mine.titleMask ? await readMemberTitles(scope.online.corporationID, scope) : new Map<number, RoleMasks>();
+    const grantable = Object.values(myGrantableRoles(mine, ceo, (roles & 1n) !== 0n, data, titles)).some(mask => mask !== 0n);
+    scope.current(); return { visible: admin || grantable, findMembers: grantable, director: (roles & 1n) !== 0n };
+  }
+  async function corporationMemberQueryContext(current?: () => void): Promise<MemberQueryContext> {
+    const scope = captureMemberOperation(current);
+    memberReadKey(scope.online.characterID);
+    // CorpQueryMembersForm.__init__138-146: titles, then local role metadata.
+    const titles = await readMemberTitles(scope.online.corporationID, scope);
+    const data = await api.getCorporationRoleData(scope.options); scope.current();
+    await wordsNow(Object.values(data.roles).map(role => `#${role.nameID}`)); scope.current();
+    const locational = new Set(data.locationalRoles), now = new Date(serverNow());
+    const roles = Object.entries(data.roles).map(([bit, role]) => {
+      const value = 1n << BigInt(bit);
+      return { value, name: plainText(store.words.get().templates[`#${role.nameID}`] ?? ""), locational: locational.has(String(value)) };
+    }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return { roles, titles: intDictOrder([...titles.keys()]).map(id => titles.get(id)!), today: [now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate()] };
+  }
+  async function corporationMemberQueryBases(current?: () => void): Promise<readonly { readonly stationID: number; readonly name: string }[]> {
+    const scope = captureMemberOperation(current);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []); scope.current();
+    const rows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
+    const ids = rows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
+    for (const id of ids) await memberNames(scope, [{ kind: "station", id }]);
+    scope.current(); return ids.map(stationID => ({ stationID, name: resolvedName(store.names.get().resolved, "station", stationID, "") }));
+  }
+  async function corporationMemberQuery(criteria: readonly MemberQueryCriterion[], current?: () => void): Promise<readonly number[]> {
+    const scope = captureMemberOperation(current);
+    const includeImplied = memberQuerySetting(store.session.get().accountID, "FMBQincludeImplied", settingsStorage).value.get();
+    const searchTitles = memberQuerySetting(store.session.get().accountID, "FMBQsearchTitles", settingsStorage).value.get();
+    const result = await scope.ask("corpRegistry", "GetMemberIDsByQuery", memberQueryArguments(criteria, includeImplied, searchTitles)); scope.current();
+    const values = isListValue(result) ? result.items : Array.isArray(result) ? result : null;
+    if (values === null) throw new Error("The corporation member query could not be read.");
+    const ids = values.map(value => {
+      const id = Number(unwrapLong(value));
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A member in the query result could not be read.");
+      return id;
+    });
+    // SimpleView.PopulateView primes all returned owners before slicing pages.
+    await memberNames(scope, ids.map(id => ({ kind: "owner" as const, id }))); scope.current();
+    return ids;
+  }
+  async function corporationDecorations(): Promise<CorporationDecorations> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
+    const catalogue = corporationDecorationsOf(raw);
+    // LoadDecorations resolves each creator as its row is built. The shared
+    // owner cache makes repeated creators free without changing this order.
+    for (const medal of catalogue.medals) await memberNames(scope, [{ kind: "owner", id: medal.creatorID }]);
+    scope.current(); return catalogue;
+  }
+  async function createCorporationMedal(title: string, description: string, graphics: readonly MedalCreationGraphic[], current?: () => void): Promise<boolean> {
+    const scope = captureMemberOperation(current);
+    // Original compiled medals.CreateMedal31-53. Window missing-field/wallet
+    // checks precede this service; do not add them to the service operation.
+    if ((BigInt(scope.online.corpRole ?? "0") & 129n) === 0n) {
+      await wordsNow(["UI/Corporations/CreateDecorationWindow/NeedRolesError"]); scope.current();
+      const reason = templateWords("UI/Corporations/CreateDecorationWindow/NeedRolesError", {}, "You need corporation roles to create decorations.");
+      sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", reason]] }, reason); return false;
+    }
+    if (title.length > 100) {
+      sayDialog("MedalNameTooLong", { type: "dict", entries: [["maxLength", "100"]] }, "The decoration name is too long."); return false;
+    }
+    if (description.length > 1000) {
+      sayDialog("MedalDescriptionTooLong", { type: "dict", entries: [["maxLength", "1000"]] }, "The decoration description is too long."); return false;
+    }
+    const args: JsonValue[] = [title, description, graphics.map(row => [...row])];
+    try {
+      try { await scope.write("corporationSvc", "CreateMedal", args, null, scope.online.corporationID); scope.current(); }
+      catch (error) {
+        scope.current();
+        const refusal = error instanceof BridgeCallError ? error.refusal : null;
+        if (refusal?.key !== "ConfirmCreatingMedal") throw error;
+        const boldLabel = "UI/Map/StarMap/lblBoldName";
+        await wordsNow([boldLabel, "UI/Util/FmtIsk"]); scope.current();
+        const rawCost = readDictEntry(refusal.values, "cost"), cost = typeof rawCost === "number" ? rawCost : Number(unwrapLong(rawCost) ?? 0n);
+        const costText = iskWords(cost, 2, store.words.get().templates, () => "") ?? `${cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+        const boldCost = formatTemplate(store.words.get().templates[boldLabel] ?? "<b>{name}</b>", { name: costText }, { nameOf: (kind, id) => nameCache.get(nameKey(kind, id)) ?? String(id) });
+        // No returns normally from the native service; SubmitData still closes
+        // its window. Only an accepted server question adds the fourth True.
+        if (!await askDialog(refusal.key, { type: "dict", entries: [["cost", boldCost]] }, `Create this decoration for ${costText}?`, "yesno", { suppressAnswer: "yes" })) { scope.current(); return true; }
+        scope.current(); await scope.write("corporationSvc", "CreateMedal", [...args, true], null, scope.online.corporationID); scope.current();
+      }
+      return true;
+    } catch (error) { if (sayRefusalDialog(error, errorWords(error))) return false; throw error; }
+  }
+  async function corporationMedalAwardees(medalID: number): Promise<readonly CorporationMedalAwardee[]> {
+    const scope = captureMemberOperation();
+    const raw = await scope.ask("corporationSvc", "GetRecipientsOfMedal", [medalID]); scope.current();
+    const awardees = corporationMedalAwardeesOf(raw);
+    for (const row of awardees) {
+      await memberNames(scope, [{ kind: "owner", id: row.recipientID }]);
+      await memberNames(scope, [{ kind: "owner", id: row.issuerID }]);
+    }
+    scope.current(); return awardees;
+  }
+  async function medalShowInfo(medalID: number, reads: InfoReadScope): Promise<MedalInfo> {
+    const pilot = callOptions.captureRequestGuard!();
+    const current = () => { pilot(); reads.assertCurrent(); };
+    const options = { ...callOptions, captureRequestGuard: () => current };
+    const ask = api.bridgeAsk(options), finish = reads.begin();
+    try {
+      current(); reads.identify();
+      const caption = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      // Native reconstruction updates caption/description, builds the supplied
+      // abstract icon, then reads the header independently. Do not collapse
+      // these calls into a page cache that the native service does not have.
+      const header = medalDetailsInfoOf(await ask("corporationSvc", "GetMedalDetails", [medalID])); current();
+      let ticker: string | null = null;
+      if (header.ownerID) {
+        requestCorpLogos([header.ownerID]);
+        if (!isNpcCorporation(header.ownerID)) {
+          const result = await api.corpTickers([header.ownerID], true, options); current();
+          ticker = result.tickers[String(header.ownerID)] ?? null;
+          await memberNames({ current, options }, [{ kind: "owner", id: header.ownerID }]);
+        }
+      }
+      current(); reads.complete();
+      return { title: caption.title, description: caption.description, ownerID: header.ownerID, awarded: header.awarded, ticker };
+    } finally { finish(); }
+  }
+  async function ownerEntryDoubleClick(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
+    const preference = ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value.get();
+    // Compiled User.OnDblClick: this path has no menu IsMe/IsNPC gate. Invite
+    // itself supplies ChtCannotInviteSelf/ErrorNotAPlayerCharacter as native.
+    if (preference === 1) { await conversations.start(ownerID); return; }
+    await ownerEntryInfo(ownerID, onInfo);
+  }
+  async function ownerEntryInfo(ownerID: number, onInfo: (typeID: number, itemID: number) => void): Promise<void> {
+    const current = callOptions.captureRequestGuard!();
+    const scope = { current, options: { ...callOptions, captureRequestGuard: () => current } };
+    await memberNames(scope, [{ kind: "ownerType", id: ownerID }]); current();
+    const typeID = Number(nameCache.get(nameKey("ownerType", ownerID)));
+    if (Number.isSafeInteger(typeID) && typeID > 0) onInfo(typeID, ownerID);
+  }
+  async function memberNames(scope: Pick<MemberOperation, "current" | "options">, refs: readonly NameRef[]): Promise<void> {
+    scope.current();
+    const missing = refs.filter(ref => !nameCache.has(nameKey(ref.kind, ref.id)));
+    if (!missing.length) return;
+    const answer = await api.resolveNames(missing, scope.options); scope.current();
+    const unresolved = new Set(answer.unresolved), entries: Record<string, string | null> = {};
+    for (const ref of missing) {
+      const key = nameKey(ref.kind, ref.id);
+      if (!unresolved.has(key)) { entries[key] = answer.names[key] ?? null; nameCache.set(key, entries[key]!); }
+    }
+    store.apply({ type: "names/resolved", entries });
+  }
+  async function corporationMemberMenu(characterID: number): Promise<"view" | "edit" | null> {
+    if (characterID <= 0 || isNpcOwner(characterID)) return null;
+    const scope = captureMemberOperation();
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its menu was being read.", 0);
+    return members.memberIDs.includes(characterID) ? (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n ? "edit" : "view" : null;
+  }
+  async function openCorporationMemberDetails(characterID: number): Promise<void> {
+    const scope = captureMemberOperation();
+    const offered = await corporationMemberMenu(characterID); scope.current();
+    if (offered !== null) showMemberDetails(characterID);
+  }
+  async function corporationRoleAllowance(characterID: number): Promise<{ readonly confirm: () => Promise<void> } | null> {
+    // CharacterChecker.OfferAllowCorpRoles: only single, non-NPC, same-corp self.
+    // The shared owner menu supplies the single-selection gate. NPC corporations are allowed.
+    if (isNpcOwner(characterID) || store.station.get().online?.characterID !== characterID) return null;
+    const scope = captureMemberOperation();
+    const member = await readCorporationMember(characterID, scope); scope.current();
+    // bco_members.MemberBlocksRoles: absent member/None means zero; use the memoized member row.
+    const raw = memberField(member, "blockRoles");
+    const blocked = typeof raw === "boolean" ? raw : (memberInteger(member, "blockRoles") ?? 0n) !== 0n;
+    if (!blocked) return null;
+    return { confirm: async () => {
+      scope.current();
+      try {
+        // menusvc._CharacterMenu648-652: Confirm is the submenu action; no extra modal or cache clear.
+        await scope.write("corpRegistry", "UpdateMember", [characterID, null, null, null, null, null, null, null, null, null, null, null, null, null, 0]);
+        scope.current();
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
+  const corporationCEOChoiceSignal = createSignal<CorporationCEOChoice | null>(null);
+  let corporationCEOAnswer: ((id: number | null) => void) | null = null;
+  function cancelCorporationCEOChoice(): void { corporationCEOAnswer?.(null); }
+  function selectCorporationCEO(n: number, index: number): void {
+    const choice = corporationCEOChoiceSignal.get();
+    if (choice?.n !== n || !Number.isInteger(index) || !choice.rows[index]) return;
+    corporationCEOChoiceSignal.set({ ...choice, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationCEO(n: number, confirmed: boolean): void {
+    const choice = corporationCEOChoiceSignal.get();
+    if (choice?.n !== n || !corporationCEOAnswer) return;
+    if (!confirmed) { corporationCEOAnswer(null); return; }
+    if (choice.selectedIndex === null) return;
+    corporationCEOAnswer(choice.rows[choice.selectedIndex]!.characterID);
+  }
+  async function askCorporationCEO(scope: MemberOperation, candidateIDs: readonly number[]): Promise<number | null> {
+    // base_corporation808-820 primes unique owners but retains every candidate row.
+    await memberNames(scope, [...new Set(candidateIDs)].map(id => ({ kind: "owner" as const, id })));
+    await wordsNow(["UI/Corporations/BaseCorporationUI/SelectReplacementCEO", "UI/Corporations/BaseCorporationUI/SelectReplacementCEOText", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]);
+    scope.current();
+    const rows = candidateIDs.map(characterID => ({ characterID, name: resolvedName(store.names.get().resolved, "owner", characterID, String(characterID)) }));
+    // ListWindow.GenerateList ordered1 compares lowercased strings, stably.
+    rows.sort((a, b) => { const left = a.name.toLowerCase(), right = b.name.toLowerCase(); return left < right ? -1 : left > right ? 1 : 0; });
+    const missing = plainText(formatTemplate(store.words.get().templates["UI/Control/ListWindow/MustSelectError"] ?? "Select {num} item.", { num: 1 }, { nameOf: () => "" }));
+    const selectionError = plainText(formatTemplate(store.words.get().templates["UI/Control/ListWindow/DisplayError"] ?? "{errorMessage}", { errorMessage: missing }, { nameOf: () => "" }));
+    cancelCorporationCEOChoice();
+    return new Promise(resolve => {
+      corporationCEOAnswer = id => { corporationCEOAnswer = null; corporationCEOChoiceSignal.set(null); resolve(id); };
+      corporationCEOChoiceSignal.set({ n: ++dialogsSaidCount, rows, selectedIndex: null, selectionError });
+    });
+  }
+  async function corporationCEOMenu(ownerIDs: readonly number[]): Promise<{ readonly confirm: () => Promise<void> } | null> {
+    // OfferResignAsCEO276-279: self and CEO, with no explicit multiple gate.
+    const online = store.station.get().online;
+    if (!online || !ownerIDs.includes(online.characterID)) return null;
+    const scope = captureMemberOperation();
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    if (memberInteger(corporation, "ceoID") !== BigInt(scope.online.characterID)) return null;
+    return { confirm: async () => {
+      scope.current();
+      try {
+        // base_corporation785-804 checks space before CEO authority and any warning.
+        const current = store.station.get().online!, flight = store.flight.get().status;
+        if (flight?.inSpace ?? (current.stationID === null && current.structureID == null && current.solarSystemID !== null)) {
+          sayDialog("CrpCanNotChangeCorpInSpace", null, "You cannot change corporation while in space."); return;
+        }
+        const now = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+        if (memberInteger(now, "ceoID") !== BigInt(scope.online.characterID)) { sayDialog("OnlyCEOCanResign", null, "Only the CEO can resign."); return; }
+        const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+        if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
+        let dialog = "CrpDestroyCorpWarning", values: JsonValue = { type: "dict", entries: [] };
+        if (members.memberIDs.length > 1) {
+          const potential = await scope.ask("corpRegistry", "GetNumberOfPotentialCEOs", []); scope.current();
+          if (!isListValue(potential)) throw new Error("The corporation's potential CEOs could not be read.");
+          dialog = potential.items.length > 0 ? "AskResignAsCEO" : "CrpDestroyNonEmptyCorpWarning";
+          if (potential.items.length > 0) values = { type: "dict", entries: [["memberCount", potential.items.length]] };
+        }
+        if (!await askDialog(dialog, values, "Resign as CEO? The corporation may be closed if there is no successor.", "yesno", { defaultAnswer: "no" })) return;
+        scope.current();
+        const mutate = async (successor: number | null): Promise<JsonValue> => {
+          const pilotCurrent = callOptions.captureRequestGuard!(), send = callOptions.fetch ?? pageFetch();
+          let sent = false;
+          const mutationOptions: api.ApiOptions = { ...scope.options,
+            captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+            fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+          };
+          scope.current();
+          const result = await api.resignCorporationCEO(successor, scope.online.corporationID, mutationOptions);
+          pilotCurrent(); return result;
+        };
+        const result = await mutate(null);
+        if (result === null) return;
+        scope.current();
+        if (!isListValue(result)) throw new Error("The corporation's replacement CEOs could not be read.");
+        const ids = result.items.map(value => { const id = Number(unwrapLong(value)); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("A replacement CEO could not be read."); return id; });
+        const choice = await askCorporationCEO(scope, ids); scope.current();
+        if (choice !== null) await mutate(choice);
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
+  const corporationAwardAskSignal = createSignal<CorporationAwardAsk | null>(null);
+  let corporationAwardAnswer: ((answer: number | string | null) => void) | null = null;
+  function cancelCorporationAward(): void { corporationAwardAnswer?.(null); }
+  function selectCorporationAward(n: number, index: number): void {
+    const ask = corporationAwardAskSignal.get();
+    if (ask?.n !== n || ask.stage !== "medal" || !Number.isInteger(index) || !ask.rows[index]) return;
+    corporationAwardAskSignal.set({ ...ask, selectedIndex: index, selectionError: "" });
+  }
+  function answerCorporationAward(n: number, confirmed: boolean, reason = ""): void {
+    const ask = corporationAwardAskSignal.get();
+    if (ask?.n !== n || !corporationAwardAnswer) return;
+    if (!confirmed) { corporationAwardAnswer(null); return; }
+    // Installed Python27 uses two-byte Unicode (maxunicode65535): its edit's
+    // maximum counts UTF-16 units, as HTML maxlength and JS string.length do.
+    if (ask.stage === "medal") {
+      if (ask.selectedIndex !== null) corporationAwardAnswer(ask.rows[ask.selectedIndex]!.medalID);
+    } else if (reason.trim().length && reason.length <= 200) corporationAwardAnswer(reason);
+    else corporationAwardAskSignal.set({ ...ask, selectionError: templateWords("UI/Common/PleaseTypeSomething", {}, "Please type something.") });
+  }
+  function askCorporationAward(value: Omit<CorporationAwardAsk, "n">): Promise<number | string | null> {
+    cancelCorporationAward();
+    return new Promise(resolve => {
+      corporationAwardAnswer = answer => { corporationAwardAnswer = null; corporationAwardAskSignal.set(null); resolve(answer); };
+      corporationAwardAskSignal.set({ ...value, n: ++dialogsSaidCount });
+    });
+  }
+  async function corporationInviteMenu(ownerIDs: readonly number[]): Promise<{ readonly invite: () => Promise<void> } | null> {
+    const online = store.station.get().online, target = ownerIDs[0];
+    // CharacterChecker332-341: no multi, NPC target, missing Personnel Manager
+    // or own member. There is no separate NPC-corporation gate on the sender.
+    if (ownerIDs.length !== 1 || typeof target !== "number" || !Number.isSafeInteger(target) || target <= 0 || isNpcOwner(target) || !online || online.corporationID === null || (BigInt(online.corpRole ?? "0") & 128n) === 0n) return null;
+    const scope = captureMemberOperation();
+    // CharacterMenu callers supply a character. Contacts also has corporation
+    // and alliance owners: use the retained eveowners type to distinguish them.
+    await memberNames(scope, [{ kind: "ownerType", id: target }]);
+    if (!CHARACTER_TYPES.has(Number(nameCache.get(nameKey("ownerType", target))))) return null;
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its invitation menu was being read.", 0);
+    if (members.memberIDs.includes(target)) return null;
+    return { invite: async () => {
+      scope.current();
+      await memberNames(scope, [{ kind: "owner", id: target }]);
+      await wordsNow(["dialog:ConfirmSendInviteToJoinCorp/title", "dialog:ConfirmSendInviteToJoinCorp/body"]); scope.current();
+      if (!await askDialog("ConfirmSendInviteToJoinCorp", { type: "dict", entries: [["charID", target]] }, "Send this pilot an invitation to join your corporation?", "okcancel")) return;
+      scope.current();
+      try { await scope.write("corpRegistry", "InsertInvitation", [target], null, scope.online.corporationID); scope.current(); }
+      catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    }};
+  }
+  async function corporationAwardMenu(ownerIDs: readonly number[]): Promise<{ readonly award: () => Promise<void> } | null> {
+    const online = store.station.get().online;
+    // Compiled CharacterChecker95-102 uses Personnel Manager, without Director.
+    if (!online || online.corporationID === null || isNpcOwner(online.corporationID) || (BigInt(online.corpRole ?? "0") & 128n) === 0n) return null;
+    const possible = ownerIDs.filter(id => id > 0 && !isNpcOwner(id));
+    if (!possible.length) return null;
+    const scope = captureMemberOperation();
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its award menu was being read.", 0);
+    const targets = possible.filter(id => members.memberIDs.includes(id));
+    if (!targets.length) return null;
+    return { award: async () => {
+      scope.current();
+      try {
+        const raw = await scope.ask("corporationSvc", "GetAllCorpMedals", [scope.online.corporationID]); scope.current();
+        const rows = corporationDecorationsOf(raw).medals.map(row => ({ medalID: row.medalID, name: row.title }));
+        if (!rows.length) { sayDialog("MedalCreateToAward", null, "Create a decoration before awarding one."); return; }
+        if (rows.some(row => !Number.isSafeInteger(row.medalID) || row.medalID <= 0 || !row.name)) throw new Error("A corporation decoration could not be read.");
+        await memberNames(scope, [...new Set(targets)].map(id => ({ kind: "owner" as const, id })));
+        await wordsNow(["UI/Corporations/Common/AwardCorpMemberDecoration", "UI/Inventory/InvItemNameShort", "UI/Control/ListWindow/MustSelectError", "UI/Control/ListWindow/DisplayError", "UI/Corporations/CorporationWindow/Members/AwardReasonTitle", "UI/Corporations/CorporationWindow/Members/PromptForReason", "UI/Common/PleaseTypeSomething", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]);scope.current();
+        const hint = targets.slice(0,5).map(id => resolvedName(store.names.get().resolved, "owner", id, String(id))).join(", ") + (targets.length > 5 ? ", ..." : "");
+        rows.sort((a,b) => {const l=a.name.toLowerCase(),r=b.name.toLowerCase();return l<r?-1:l>r?1:0;});
+        const missing = templateWords("UI/Control/ListWindow/MustSelectError", { num: 1 }, "Select one item.");
+        const picked = await askCorporationAward({ stage: "medal", hint, rows, selectedIndex: null, selectionError: templateWords("UI/Control/ListWindow/DisplayError", { errorMessage: missing }, missing) });scope.current();
+        if (typeof picked !== "number") return;
+        // medals93-105: Director OR Personnel is checked at this callback, before NamePopup.
+        if ((BigInt(store.station.get().online?.corpRole ?? "0") & 129n) === 0n) {
+          await wordsNow(["UI/Corporations/CreateDecorationWindow/NeedRolesError"]);scope.current();
+          sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", templateWords("UI/Corporations/CreateDecorationWindow/NeedRolesError", {}, "You need corporation roles to award decorations.")]] }, "You need corporation roles to award decorations."); return;
+        }
+        const reason = await askCorporationAward({ stage: "reason", hint, rows: [], selectedIndex: null, selectionError: "" });scope.current();
+        if (typeof reason !== "string" || !reason) return;
+        const args: JsonValue[] = [picked, targets, reason];
+        try { await scope.write("corporationSvc", "GiveMedalToCharacters", args, null, scope.online.corporationID);scope.current(); }
+        catch (error) {
+          scope.current();
+          const refusal = error instanceof BridgeCallError ? error.refusal : null;
+          if (!refusal?.key.startsWith("ConfirmGivingMedal")) throw error;
+          await wordsNow(["UI/Corporations/MedalsToUsers", "UI/Util/FmtIsk"]);scope.current();
+          const rawCost = readDictEntry(refusal.values, "cost"), cost = Number(unwrapLong(rawCost) ?? (typeof rawCost === "number" ? rawCost : 0));
+          const costText = iskWords(cost, 2, store.words.get().templates, () => "") ?? `${cost.toLocaleString("en-US", {minimumFractionDigits:2,maximumFractionDigits:2})} ISK`;
+          const membersText = templateWords("UI/Corporations/MedalsToUsers", {numMembers: targets.length}, `${targets.length} members`);
+          if (!await askDialog(refusal.key, { type: "dict", entries: [["amount",targets.length],["members",membersText],["cost",costText]] }, `Award decorations to ${membersText} for ${costText}?`, "yesno", { suppressAnswer: "yes" })) return;
+          scope.current();await scope.write("corporationSvc", "GiveMedalToCharacters", [...args, true], null, scope.online.corporationID);scope.current();
+        }
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    }};
+  }
+  let resignation: { readonly pilot: number } | null = null;
+  async function confirmCorporationWarKick(scope: MemberOperation): Promise<boolean> {
+    const wars = await scope.ask("warRegistry", "GetWars", [scope.online.allianceID || scope.online.corporationID]); scope.current();
+    if (!wars || typeof wars !== "object" || Array.isArray(wars) || !("type" in wars) || wars.type !== "dict") throw new Error("The corporation's wars could not be read.");
+    let active = 0;
+    for (const [, war] of readDictPairs(wars)) {
+      const mutual = memberField(war, "mutual"), finished = memberField(war, "timeFinished");
+      const mutualNumber = typeof mutual === "boolean" ? (mutual ? 1n : 0n) : unwrapLong(mutual);
+      if (mutualNumber === null || finished === undefined) throw new Error("A corporation war could not be read.");
+      // Native counts future declarations too: there is no timeStarted comparison.
+      if (mutualNumber === 0n && finished === null) active++;
+    }
+    if (!active) return true;
+    const confirmed = await askDialog("CorpMemberKickActiveWarConfirm", { type: "dict", entries: [["noOfWars", active]] }, `Remove members while the corporation has ${active} active wars?`);
+    scope.current();
+    return confirmed;
+  }
+  async function corporationMemberNamesList(scope: MemberOperation, characterIDs: readonly number[]): Promise<string> {
+    await memberNames(scope, characterIDs.map(id => ({ kind: "owner" as const, id })));
+    await wordsNow([LIST_DELIMITER]); scope.current();
+    return characterIDs.map(id => resolvedName(store.names.get().resolved, "owner", id, "")).join(store.words.get().templates[LIST_DELIMITER] ?? ", ");
+  }
+  async function confirmCorporationMemberKick(scope: MemberOperation, characterIDs: readonly number[]): Promise<boolean> {
+    // ConfirmKickMembers433-458 guards only the final prompt, shared by Quit and Expel.
+    const pilot = requestGeneration;
+    if (resignation?.pilot === pilot) return false;
+    const lease = { pilot }; resignation = lease;
+    try {
+      const single = characterIDs.length === 1, self = single && characterIDs[0] === scope.online.characterID;
+      const dialog = self ? "ConfirmQuitCorporation" : single ? "ConfirmKickCorpMember" : "ConfirmKickCorpMembers";
+      const entries: [string, JsonValue][] = self ? [] : single ? [["member", characterIDs[0]!]] : [["members", await corporationMemberNamesList(scope, characterIDs)]];
+      scope.current();
+      const confirmed = await askDialog(dialog, { type: "dict", entries }, self ? "Quit your corporation?" : "Expel these corporation members?", "okcancel");
+      scope.current();
+      return confirmed;
+    } catch (error) { throwIfRequestRetired(error); return false; }
+    finally { if (resignation === lease) resignation = null; }
+  }
+  function cannotKickCorporationMember(): void {
+    sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/BaseCorporationUI/CannotKickMember"]]] }, "You cannot remove this corporation member.");
+  }
+  async function corporationExpelMenu(ownerIDs: readonly number[]): Promise<{ readonly multiple: boolean; readonly confirm: () => Promise<void> } | null> {
+    // OfferExpelCorpMember151-160: native menu merge keeps only eligible peer entries.
+    if (!store.station.get().online || (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) === 0n) return null;
+    const scope = captureMemberOperation(), multiple = ownerIDs.length > 1;
+    const members = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (members.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its menu was being read.", 0);
+    const targets = ownerIDs.filter(id => id !== scope.online.characterID && !isNpcOwner(id) && members.memberIDs.includes(id));
+    if (!targets.length) return null;
+    return { multiple, confirm: async () => {
+      scope.current();
+      try {
+        const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+        if (multiple) {
+          if (targets.includes(scope.online.characterID)) { sayDialog("CorpCantKickSelfInMultiKick", null, "You cannot expel yourself in a multiple expulsion."); return; }
+          if (!director) { sayDialog("CrpAccessDenied", { type: "dict", entries: [["reason", [101, "UI/Corporations/AccessRestrictions/NotDirector"]]] }, "You must be a Director."); return; }
+        } else {
+          if (!director) { cannotKickCorporationMember(); return; }
+          const eligible = await scope.ask("corpRegistry", "CanBeKickedOut", [targets[0]!]); scope.current();
+          if (!(typeof eligible === "boolean" ? eligible : (unwrapLong(eligible) ?? 0n) !== 0n)) { cannotKickCorporationMember(); return; }
+        }
+        if (!await confirmCorporationWarKick(scope) || !await confirmCorporationMemberKick(scope, targets)) return;
+        scope.current();
+        // KickOutMultipleMembers459-476 does not read each target's eligibility first.
+        const result = await scope.write("corpRegistry", multiple ? "KickOutMembers" : "KickOutMember", multiple ? [targets] : [targets[0]!], null, scope.online.corporationID);
+        scope.current();
+        if (!multiple) return;
+        const kicked = readDictEntry(result, "kicked"), notKicked = readDictEntry(result, "notKicked");
+        if (!isListValue(kicked) || !isListValue(notKicked)) throw new Error("The corporation's expulsion results could not be read.");
+        const ids = (items: readonly JsonValue[]) => items.map(value => { const id = Number(unwrapLong(value)); if (!Number.isSafeInteger(id) || id <= 0) throw new Error("An expelled member could not be read."); return id; });
+        const kickedMembers = await corporationMemberNamesList(scope, ids(kicked.items));
+        let notKickedMessage = "";
+        if (notKicked.items.length) {
+          const names = await corporationMemberNamesList(scope, ids(notKicked.items)), label = "UI/Corporations/BaseCorporationUI/CorpKickedMultipleMembersFailed";
+          await wordsNow([label]); scope.current();
+          notKickedMessage = formatTemplate(store.words.get().templates[label] ?? "The following members could not be expelled: {notKickedMembers}", { notKickedMembers: names }, { nameOf: () => "" });
+        }
+        scope.current();
+        sayDialog("CorpKickedMultipleMembersResult", { type: "dict", entries: [["kickedMembers", kickedMembers], ["notKickedMessage", notKickedMessage]] }, `Expelled: ${kickedMembers}. ${notKickedMessage}`);
+      } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+    } };
+  }
+  async function corporationQuitMenu(ownerIDs: readonly number[]): Promise<{ readonly removeRoles: () => Promise<void>; readonly quit: () => Promise<void> } | null> {
+    // CharacterChecker.OfferQuitCorp245-252 has no multiple-selection gate.
+    // userentry._GetMultiMenu omits CharacterMenu for contact-list multiple selection; the caller handles that.
+    const online = store.station.get().online;
+    if (!online || !ownerIDs.includes(online.characterID) || online.corporationID === null || isNpcCorporation(online.corporationID)) return null;
+    const scope = captureMemberOperation(), self = scope.online.characterID;
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []); scope.current();
+    const ceoID = memberInteger(corporation, "ceoID");
+    if (ceoID === null) throw new Error("The corporation's CEO could not be read.");
+    if (ceoID === BigInt(self)) return null;
+    return {
+      removeRoles: async () => {
+        scope.current();
+        const confirmed = await askDialog("ConfirmRemoveAllRoles", { type: "dict", entries: [] }, "Remove all your corporation roles?", "okcancel");
+        scope.current();
+        if (!confirmed) return;
+        try {
+          // base_corporation.RemoveAllRoles482-487: eight masks, unchanged base, titleMask0, blockRoles1.
+          await scope.write("corpRegistry", "UpdateMember", [self, null, null, null, 0, 0, 0, 0, 0, 0, 0, 0, null, 0, 1]);
+          scope.current();
+        } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+      },
+      quit: async () => {
+        scope.current();
+        try {
+          // base_corporation.KickOut397-431: eligibility, wars, confirmation, then the session mutation.
+          const eligible = await scope.ask("corpRegistry", "CanBeKickedOut", [self]); scope.current();
+          if (!(typeof eligible === "boolean" ? eligible : (unwrapLong(eligible) ?? 0n) !== 0n)) {
+            cannotKickCorporationMember();
+            return;
+          }
+          if (!await confirmCorporationWarKick(scope) || !await confirmCorporationMemberKick(scope, [self])) return;
+          // Keep the originating corporation until actual dispatch. The intended successful reply
+          // may change it; notification delivery and the response still belong to this same pilot.
+          const pilotCurrent = callOptions.captureRequestGuard!(), send = callOptions.fetch ?? pageFetch();
+          let sent = false;
+          const quitOptions: api.ApiOptions = { ...scope.options,
+            captureRequestGuard: () => () => { pilotCurrent(); if (!sent) scope.current(); },
+            fetch: (input, init) => { scope.current(); sent = true; return send(input, init); },
+          };
+          scope.current();
+          await api.quitCorporation(self, scope.online.corporationID, quitOptions);
+          pilotCurrent();
+        } catch (error) { if (!sayRefusalDialog(error, errorWords(error))) throw error; }
+      },
+    };
+  }
   // bco_members.GetMember @Memoize(0.1): caching.Memoize takes minutes, so six seconds after the reply.
   const memberReads = new Map<string, { value: JsonValue; savedAt: number }>();
   const memberTitleReads = new Map<number, Map<number, CorporationTitle>>();
   let memberDataCorpID: number | null = null;
+  let memberDataPilotGeneration = -1, memberDataCorporationGeneration = -1;
   function memberReadKey(characterID: number): string {
     const corporationID = store.station.get().online?.corporationID ?? null;
-    if (corporationID !== memberDataCorpID) { memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID; }
+    if (corporationID !== memberDataCorpID || memberDataPilotGeneration !== requestGeneration || memberDataCorporationGeneration !== corporationMembershipGeneration) {
+      memberReads.clear(); memberTitleReads.clear(); memberDataCorpID = corporationID;
+      memberDataPilotGeneration = requestGeneration; memberDataCorporationGeneration = corporationMembershipGeneration;
+    }
     return `${corporationID}:${characterID}`;
   }
-  async function readMemberTitles(corporationID: number): Promise<ReadonlyMap<number, CorporationTitle>> {
+  async function readMemberTitles(corporationID: number, scope = captureMemberOperation()): Promise<ReadonlyMap<number, CorporationTitle>> {
+    scope.current();
     const held = memberTitleReads.get(corporationID);
     if (held) return held;
-    const answer = await bridgeAsk("corpRegistry", "GetTitles", []);
+    const answer = await scope.ask("corpRegistry", "GetTitles", []);
     const label = "UI/Corporations/Common/TitleUntitled";
     await wordsNow([label]);
+    scope.current();
     const template = store.words.get().templates[label] ?? "Untitled {index}";
     const rows = memberTitlesOf(answer, index => plainText(formatTemplate(template, { index }, { nameOf: () => "" })));
     memberTitleReads.set(corporationID, rows);
     return rows;
   }
-  async function corporationMemberTitles(): Promise<readonly CorporationTitle[]> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function corporationMemberTitles(current?: () => void): Promise<readonly CorporationTitle[]> {
+    const scope = captureMemberOperation(current), online = scope.online;
     memberReadKey(online.characterID);
-    return [...(await readMemberTitles(online.corporationID)).values()].sort((a, b) => a.titleID - b.titleID);
+    return [...(await readMemberTitles(online.corporationID!, scope)).values()].sort((a, b) => a.titleID - b.titleID);
   }
   async function corporationMemberSummary(details: CorporationMemberDetails): Promise<{ readonly titles: readonly CorporationTitle[]; readonly showTitleNames: boolean }> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+    const scope = captureMemberOperation(details.assertCurrent), online = scope.online;
     memberReadKey(online.characterID);
     // OnTabRolesSummary asks GetTitles, then GetMyGrantableRoles; the latter reuses the six-second member cache.
-    const titles = await readMemberTitles(online.corporationID);
-    const mine = corporationMemberOf(await readCorporationMember(online.characterID));
-    const data = await api.getCorporationRoleData(callOptions), corpRole = BigInt(online.corpRole ?? "0");
+    const titles = await readMemberTitles(online.corporationID!, scope);
+    const mine = corporationMemberOf(await readCorporationMember(online.characterID, scope));
+    const data = await api.getCorporationRoleData(scope.options), corpRole = BigInt(online.corpRole ?? "0"); scope.current();
     const grants = myGrantableRoles(mine, details.viewerIsCEO, (corpRole & 1n) !== 0n, data, titles);
     const personnel = details.roleGroups.flatMap(group => group.roles).find(role => role.roleName === "rolePersonnelManager")?.roleID ?? 0n;
     // Keep the service's title iteration order for provenance lists, unlike the ID-sorted Titles tab.
@@ -14905,10 +16339,31 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (open !== undefined) { groups[String(groupID)] = open; setCharUiSetting("corpRolesSummaryGroups", JSON.stringify(groups)); }
     return groups[String(groupID)] === true;
   }
-  async function readCorporationMember(characterID: number): Promise<JsonValue> {
+  const decorationGroupMemory = new Map<number, Record<string, unknown>>();
+  function corporationDecorationGroupOpen(medalID: number, recipients: boolean, open?: boolean): boolean {
+    // registry.Get/SetListGroupOpenState553-575: character listgroups,
+    // Unicode list/group keys. Parent closure never changes the child's state.
+    const characterID = store.station.get().online?.characterID ?? null;
+    if (characterID === null) return false;
+    const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    let groups = decorationGroupMemory.get(characterID) ?? {};
+    const kept = charUiSetting("listgroups");
+    try { if (kept !== null) groups = record(JSON.parse(kept)); } catch { /* Keep this character's in-memory state. */ }
+    const listID = recipients ? "corpdecorationdetails" : "corpdecorations", groupID = String(medalID);
+    const list = record(groups[listID]), group = record(list[groupID]);
+    if (open !== undefined) groups = { ...groups, [listID]: { ...list, [groupID]: { ...group, open } } };
+    decorationGroupMemory.set(characterID, groups);
+    if (open !== undefined || kept === null) setCharUiSetting("listgroups", JSON.stringify(groups));
+    return open ?? !!group.open;
+  }
+  async function readCorporationMember(characterID: number, scope = captureMemberOperation()): Promise<JsonValue> {
+    scope.current();
     const key = memberReadKey(characterID), kept = memberReads.get(key);
     if (kept && kept.savedAt + 6_000 >= Date.now()) return kept.value;
-    const value = await bridgeAsk("corpRegistry", "GetMember", [characterID]);
+    const ids = await api.readCorporationMemberIDs(scope.options); scope.current();
+    if (ids.corporationID !== scope.online.corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The member belongs to a previous corporation.", 0);
+    if (!ids.memberIDs.includes(characterID)) return null;
+    const value = await scope.ask("corpRegistry", "GetMember", [characterID]); scope.current();
     memberReads.set(key, { value, savedAt: Date.now() });
     return value;
   }
@@ -14924,41 +16379,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     if (answer.corporationID !== corporationID) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "The corporation changed while its members were being read.", 0);
     return answer.memberIDs;
   }
-  async function corporationMemberRoleBase(): Promise<number | null> {
-    const online = store.station.get().online;
-    if (!online) throw new Error("No pilot is selected.");
-    return corporationMemberOf(await readCorporationMember(online.characterID)).baseID;
+  async function corporationMemberRoleBase(current?: () => void): Promise<number | null> {
+    const scope = captureMemberOperation(current);
+    return corporationMemberOf(await readCorporationMember(scope.online.characterID, scope)).baseID;
   }
-  async function corporationMemberDetails(characterID: number): Promise<CorporationMemberDetails> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function corporationMemberDetails(characterID: number, current?: () => void): Promise<CorporationMemberDetails> {
+    const scope = captureMemberOperation(current), online = scope.online;
     // EditMemberDialog.LoadChar 144-190: security, private row, corporation, my grantable state, member, offices.
-    const security = await bridgeAsk("crimewatch", "GetCharacterSecurityStatus", [characterID]);
-    const info = await bridgeAsk("charMgr", "GetPrivateInfo", [characterID]);
-    const corporation = await bridgeAsk("corpRegistry", "GetCorporation", []);
-    const mine = await readCorporationMember(online.characterID);
+    const security = await scope.ask("crimewatch", "GetCharacterSecurityStatus", [characterID]);
+    const info = await scope.ask("charMgr", "GetPrivateInfo", [characterID]);
+    const corporation = await scope.ask("corpRegistry", "GetCorporation", []);
+    const mine = await readCorporationMember(online.characterID, scope);
     const myMember = corporationMemberOf(mine);
     const ceoID = Number(memberInteger(corporation, "ceoID") ?? 0n);
-    const viewerIsCEO = ceoID === online.characterID, viewerIsDirector = (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
-    const titles = !viewerIsCEO && (myMember.masks.roles & 1n) === 0n && myMember.titleMask ? await readMemberTitles(online.corporationID) : new Map<number, RoleMasks>();
-    const member = corporationMemberOf(await readCorporationMember(characterID));
-    const offices = await bridgeAsk("officeManager", "GetMyCorporationsOffices", []);
+    const viewerIsCEO = ceoID === online.characterID, viewerIsDirector = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    const titles = !viewerIsCEO && (myMember.masks.roles & 1n) === 0n && myMember.titleMask ? await readMemberTitles(online.corporationID, scope) : new Map<number, RoleMasks>();
+    const rawMember = await readCorporationMember(characterID, scope);
+    if (rawMember === null) throw Object.assign(new Error("That character is no longer a member of this corporation."), { code: "CORPORATION_MEMBER_GONE" });
+    const member = corporationMemberOf(rawMember);
+    const offices = await scope.ask("officeManager", "GetMyCorporationsOffices", []);
     const officeRows = offices && typeof offices === "object" && !Array.isArray(offices) && "list" in offices && Array.isArray(offices.list) ? offices.list : readRowsetRows(offices);
     const stationIDs = officeRows.map(row => Number(memberInteger(row, "stationID") ?? 0n)).filter(id => id >= 60_000_000 && id < 64_000_000);
     const raceID = Number(memberInteger(info, "raceID") ?? 0n);
-    const raceNames = await api.getRaceNameIDs(callOptions);
+    const raceNames = await api.getRaceNameIDs(scope.options); scope.current();
     const raceNameID = raceNames[raceID];
     if (!raceNameID) throw new Error("That race's name is missing from the installed client.");
     await wordsNow([`#${raceNameID}`]);
-    await resolveNamesNow([{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
+    scope.current();
+    await memberNames(scope, [{ kind: "owner", id: characterID }, ...[...stationIDs, ...(member.baseID ? [member.baseID] : [])].map(id => ({ kind: "station" as const, id }))]);
     const names = store.names.get().resolved;
     const targetIsCEO = ceoID === characterID;
-    const roleData = await api.getCorporationRoleData(callOptions);
+    const roleData = await api.getCorporationRoleData(scope.options); scope.current();
     const queryLabel = "UI/Corporations/BaseCorporationUI/Query", takeLabel = "UI/Corporations/BaseCorporationUI/Take", combinedLabel = "UI/Corporations/EditMemberDialog/RoleNameAndRole";
     const ordinals = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh"];
     const divisionLabels = ordinals.map(ordinal => `UI/Corporations/Common/CorporateDivision${ordinal}`).concat(["UI/Corporations/Common/CorporateDivisionMasterWallet"], ordinals.slice(1).map(ordinal => `UI/Corporations/Common/CorporateDivisionWallet${ordinal}`));
     const goalsHangar = "UI/Inventory/GoalDeliveriesHangar";
     await wordsNow([queryLabel, takeLabel, combinedLabel, goalsHangar, ...divisionLabels, ...Object.values(roleData.roles).flatMap(role => [`#${role.nameID}`, `#${role.descriptionID}`]), ...Object.values(roleData.groups).map(group => `#${group.roleGroupNameID}`)]);
+    scope.current();
     const templates = store.words.get().templates;
     const divisionName = (division: number): string => {
       if (division === 0 || division === 15) return templates[goalsHangar] ?? "";
@@ -14969,36 +16426,36 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const roleGroups = memberRoleGroups(roleData, id => plainText(templates[`#${id}`] ?? ""), plainText(templates[queryLabel] ?? ""), plainText(templates[takeLabel] ?? ""), divisionName,
       (role, name) => formatTemplate(templates[combinedLabel] ?? "", { role, name }, { nameOf: () => "" }));
     // Compiled corp_util.CanEditBase: only the CEO edits the CEO; a Director may edit other members.
-    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || (BigInt(online.corpRole ?? "0") & 1n) !== 0n;
-    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], callOptions);
+    const canEditBase = targetIsCEO ? viewerIsCEO : viewerIsCEO || viewerIsDirector;
+    const config = await api.getGlobalConfig(["content_compliance_control_system_enabled"], scope.options); scope.current();
     const raw = config.values.content_compliance_control_system_enabled;
     const controlled = typeof raw === "number" ? Number.isFinite(raw) && Math.trunc(raw) !== 0 : typeof raw === "boolean" ? raw : typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim()) && BigInt(raw.trim()) !== 0n;
-    return { member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
+    return { assertCurrent: scope.current, member, name: resolvedName(names, "owner", characterID, ""), viewerIsCEO, targetIsCEO, canEditBase, canEditTitle: canEditBase && !controlled,
       viewerIsDirector, myBaseID: myMember.baseID, grants: myGrantableRoles(myMember, viewerIsCEO, viewerIsDirector, roleData, titles), roleGroups,
       raceNameID, gender: Number(memberInteger(info, "gender") ?? 0n), createDateTime: memberInteger(info, "createDateTime") ?? 0n,
       security: typeof security === "number" ? security : Number(unwrapLong(security) ?? 0n),
       bases: stationIDs.map(stationID => ({ stationID, name: resolvedName(names, "station", stationID, "") })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0) };
   }
-  async function giveCorporationShares(characterID: number): Promise<void> {
-    const online = store.station.get().online;
-    if (!online || online.corporationID === null) throw new Error("No corporation is selected.");
+  async function giveCorporationShares(characterID: number, current?: () => void): Promise<void> {
+    const scope = captureMemberOperation(current), online = scope.online;
     const caption = "UI/Corporations/EditMemberDialog/GiveShares", hint = "UI/Corporations/EditMemberDialog/HowManySharesToGive";
     await wordsNow([caption, hint]);
-    await resolveNamesNow([{ kind: "owner", id: characterID }]);
+    scope.current();
+    await memberNames(scope, [{ kind: "owner", id: characterID }]);
     // Compiled EditMemberDialog.OnGiveShares and uix.QtyPopup: no role gate,
     // no profile Apply, no balance preflight; Cancel sends no call.
     const amount = await askQuantity({ min: 1, max: 2_147_483_647, value: 1,
       hintLabel: hint, hint: null, hintArgs: { player: characterID }, captionLabel: caption, caption: "Give Shares" });
+    scope.current();
     if (amount === null) return;
-    const current = store.station.get().online;
-    if (current?.characterID !== online.characterID || current.corporationID !== online.corporationID) return;
-    try { await bridgeDo("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); }
+    try { await scope.write("corpRegistry", "MoveCompanyShares", [online.corporationID, characterID, amount]); scope.current(); }
     catch (error) {
       // OnGiveShares leaves UserError to the client's normal FSD dialog handler.
       if (!sayRefusalDialog(error, errorWords(error))) throw error;
     }
   }
   async function saveCorporationMember(details: CorporationMemberDetails, title: string, baseID: number | null, roleDraft: RoleMasks, titleDraft: number): Promise<CorporationMemberDetails> {
+    const scope = captureMemberOperation(details.assertCurrent);
     const member = details.member;
     if (details.targetIsCEO && !details.viewerIsCEO) return details;
     const nextTitle = details.canEditTitle ? memberTitleOf(title) : member.title;
@@ -15011,12 +16468,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const masks = MEMBER_ROLE_FIELDS.map(key => ({ type: "long", value: nextMasks[key].toString() } as const));
     // EditMemberDialog.UpdateMember 466-520 and bco_members.UpdateMember 243: all 15 positional arguments.
     if ((nextMasks.roles & 1n) !== 0n) for (let i = 1; i < masks.length; i++) masks[i] = { type: "long", value: "0" };
-    const director = (BigInt(store.station.get().online?.corpRole ?? "0") & 1n) !== 0n;
+    const director = details.viewerIsDirector;
     const sentTitleMask = nextTitleMask === member.titleMask ? null : (nextMasks.roles & 1n) !== 0n ? 0 : nextTitleMask;
-    await bridgeDo("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]);
+    await scope.write("corpRegistry", "UpdateMember", [member.characterID, director ? { type: "wstring", value: nextTitle } : null, director ? member.divisionID : null, director ? member.squadronID : null, ...masks, nextBase, sentTitleMask, null]); scope.current();
     // base_corporation.ClearMemberCache clears this target's memoized GetMember before LoadChar.
     memberReads.delete(memberReadKey(member.characterID));
-    return corporationMemberDetails(member.characterID);
+    return corporationMemberDetails(member.characterID, scope.current);
   }
   async function checkSearchWordsAllowed(value: string): Promise<boolean> {
     if (value.length === 0) return true;
@@ -15146,6 +16603,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         store.apply({ type: "character/offline" });
         throw error;
       }
+      // CreateContactLabel (1015-1020) lets UserError reach the ordinary client
+      // dialog handler. A refused creation has no label ID and changes no book.
+      if (method === "CreateLabel" && sayRefusalDialog(error, "The contact label could not be created.")) return null;
       throw new Error(mailRefusalMessage(error));
     }
   }
@@ -15436,6 +16896,32 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         imageServerSignal.set(typeof value === "string" ? value : null);
       })
       .catch(() => setTimeout(() => (imageServerAsked = false), ASK_AGAIN_MS));
+  }
+  const capturedPortraitCache = new Map<string, { readonly image: { readonly base64: string; readonly contentType: string }; readonly modified: number }>();
+  async function capturePortraits(characterIDs: readonly number[], received: (characterID: number, image: { readonly base64: string; readonly contentType: string }) => void, progress: (done: number, total: number) => void): Promise<void> {
+    // Original photo.SavePortraits/_SavePortraits437-453: merged list, one size
+    // read, forced refresh of each image, byte copy, and progress even if absent.
+    const current = callOptions.captureRequestGuard!();
+    const options = { ...callOptions, priority: "user" as const, captureRequestGuard: () => current };
+    current(); progress(0, characterIDs.length);
+    const config = await api.getGlobalConfig(["defaultPortraitSaveSize"], options); current();
+    const configured = config.values.defaultPortraitSaveSize;
+    const size = configured === null || configured === undefined ? 1024 : Math.trunc(Number(configured));
+    if (!Number.isSafeInteger(size) || size <= 0) throw new Error("The image server supplied an invalid portrait save size.");
+    for (const [index, id] of characterIDs.entries()) {
+      const key = `${id}:${size}`, cached = capturedPortraitCache.get(key);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        current(); const reply = await api.readCapturePortrait(id, size, cached?.modified ?? null, options); current();
+        if (!reply.transportError) {
+          const image = reply.notModified ? cached?.image : reply.image;
+          if (image) { capturedPortraitCache.set(key, { image, modified: Date.now() }); received(id, image); }
+          break;
+        }
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+      }
+      current(); progress(index + 1, characterIDs.length);
+    }
+    progress(characterIDs.length, characterIDs.length);
   }
 
   // eveIcon.CorpIcon: the client's logo library, read once, and each player corporation's logo, asked once.
@@ -16868,6 +18354,75 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     const cash = decodeWalletCash(await walletReads.wealth());
     const value = cash === null ? Number.NaN : Number(cash);
     return Number.isFinite(value) ? value : null;
+  }
+
+  const moneyTransferSignal = createSignal<MoneyTransfer | null>(null);
+  let moneyTransferGeneration = 0;
+  let moneyTransferCurrent: (() => void) | null = null;
+  let moneyTransferWrite: Ask | null = null;
+  function closeMoneyTransfer(n?: number): void {
+    if (n !== undefined && moneyTransferSignal.get()?.n !== n) return;
+    moneyTransferGeneration++; moneyTransferSignal.set(null); moneyTransferCurrent = null; moneyTransferWrite = null;
+  }
+  function updateTransferWealth(balance: number, corporationID?: number): void {
+    const held = moneyTransferSignal.get();
+    if (!held || held.corporate !== (corporationID !== undefined) || held.corporate && held.fromID !== corporationID) return;
+    moneyTransferSignal.set({ ...held, maximum: balance });
+  }
+  async function corporationCashMenu(ownerIDs: readonly number[]): Promise<{ readonly transfer: () => Promise<void> } | null> {
+    const target = ownerIDs[0], online = store.station.get().online;
+    // Original CharacterChecker292-300: self allowed; no Junior/take alternative.
+    if (ownerIDs.length !== 1 || !target || target <= 0 || !Number.isSafeInteger(target) || isNpcOwner(target) || !online || (BigInt(online.corpRole ?? "0") & 256n) === 0n) return null;
+    const scope = captureMemberOperation();
+    await memberNames(scope, [{ kind: "ownerType", id: target }]);
+    if (!CHARACTER_TYPES.has(Number(nameCache.get(nameKey("ownerType", target))))) return null;
+    return { transfer: async () => { scope.current(); await openMoneyTransfer(target, true); } };
+  }
+  async function openMoneyTransfer(toID: number, corporate = false): Promise<void> {
+    const online = store.station.get().online;
+    if (!online) throw new BridgeCallError("NO_LIVE_SESSION", "No character is online.", 409);
+    closeMoneyTransfer(); const n = moneyTransferGeneration;
+    const pilot = callOptions.captureRequestGuard!();
+    const scope = corporate ? captureMemberOperation() : { current: pilot, options: { ...callOptions, captureRequestGuard: () => pilot } };
+    const current = () => { scope.current(); if (moneyTransferGeneration !== n) throw new BridgeCallError("SESSION_REQUEST_RETIRED", "This transfer window was replaced.", 0); };
+    const fromID = corporate ? online.corporationID! : online.characterID;
+    // Native _InitVariables reads None BEFORE capturing the active source key.
+    const maximum = corporate ? await corporationWealthReads.fresh(null) : await pilotWealth(); current();
+    if (maximum === null) throw new Error("The wallet returned no balance.");
+    const fromAccountKey = corporate ? store.station.get().online?.corpAccountKey ?? null : null;
+    await memberNames(scope, [{ kind: "owner", id: fromID }, { kind: "owner", id: toID }]); current();
+    let divisionName: string | null = null;
+    if (corporate && fromAccountKey !== null) {
+      const row = await api.bridgeAsk(scope.options)("corpRegistry", "GetCorporation", []); current();
+      const ordinal = (fromAccountKey ?? 1000) - 999;
+      const suffix = ["MasterWallet", "WalletSecond", "WalletThird", "WalletFourth", "WalletFifth", "WalletSixth", "WalletSeventh"][ordinal - 1] ?? "MasterWallet";
+      const label = `UI/Corporations/Common/CorporateDivision${suffix}`;
+      await wordsNow([label]); current();
+      divisionName = divisionNamesOf(row)[String(ordinal)] ?? templateWords(label, {}, ordinal === 1 ? "Master Wallet" : `Wallet Division ${ordinal}`);
+    }
+    if (corporate) { requestCorpLogos([fromID]); loadOwnerLogos(); }
+    await wordsNow(["UI/Wallet/WalletWindow/TransferMoney", "UI/Wallet/WalletWindow/FromCharacter", "UI/Wallet/WalletWindow/FromCharacterAcct", "UI/Wallet/WalletWindow/ToCharacter", "UI/Wallet/WalletWindow/ColHeaderAmount", "UI/Wallet/WalletWindow/Reason", "UI/Wallet/WalletWindow/TransferSuccessful", "UI/Common/Buttons/OK", "UI/Common/Buttons/Cancel"]); current();
+    void loadImageServer();
+    moneyTransferCurrent = current; moneyTransferWrite = api.bridgeDo({ ...scope.options, captureRequestGuard: () => current });
+    moneyTransferSignal.set({ n, corporate, fromID, toID, fromName: nameCache.get(nameKey("owner", fromID)) ?? "…", toName: nameCache.get(nameKey("owner", toID)) ?? "…", fromAccountKey, divisionName, maximum, busy: false, error: null });
+  }
+  async function confirmMoneyTransfer(n: number, typed: string, reason: string): Promise<void> {
+    const held = moneyTransferSignal.get(), current = moneyTransferCurrent, write = moneyTransferWrite;
+    if (!held || held.n !== n || held.busy || !current || !write) return;
+    current(); const amount = transferValue(typed); if (!(amount > 0)) return;
+    moneyTransferSignal.set({ ...held, busy: true, error: null });
+    try {
+      if (held.corporate) await write("account", "GiveCashFromCorpAccount", [held.toID, amount, held.fromAccountKey], { toAccountKey: null, reason: transferReason(reason) }, held.fromID);
+      else await giveMoneyCall(write, held.toID, amount, transferReason(reason));
+      current();
+      const text = templateWords("UI/Wallet/WalletWindow/TransferSuccessful", {}, "Transfer successful");
+      sayDialog("CustomNotify", { type: "dict", entries: [["notify", text]] }, text);
+      closeMoneyTransfer(n);
+    } catch (error) {
+      if (moneyTransferSignal.get()?.n !== n) return;
+      moneyTransferSignal.set({ ...moneyTransferSignal.get()!, busy: false, error: sayRefusalDialog(error, errorWords(error)) ? null : errorWords(error) });
+      if (isSessionLost(error)) closeMoneyTransfer(n);
+    }
   }
 
   async function giveMoney(toID: number, amount: number, reason: string): Promise<void> {
@@ -18605,7 +20160,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // (A quantity below nought is a singleton's, as the client reads one: eveMisc.LaunchFromShip, 19 to 21.)
       return row ? [{ itemID, quantity: row.quantity, singleton: row.quantity < 0 }] : [];
     });
-    if (rows.length > 0) await moveItemsCall(bridgeDo, "hangar", { kind: "hangar" }, shipID, rows, null);
+    if (rows.length > 0) await moveItemsCall(inventoryMoves.act, "hangar", { kind: "hangar" }, shipID, rows, null);
     let after: readonly HoldItem[];
     try {
       after = (await held()).rows;
@@ -21915,6 +23470,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   function beginSessionClose(): void {
     if (sessionClosing) throw new Error("This pilot session is already being released.");
     sessionClosing = true;
+    retireInventoryPasswords();
+    closeMedalDesigner();
     sessionCloseGeneration += 1;
     // Stop producers before attempting release. A refused or ambiguous release
     // keeps the token and pilot held, with automation stopped for reconciliation.
@@ -26975,7 +28532,10 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return characterCorporationOf(bridgeAsk, characterID);
     },
     corporationAlliance(corporationID) {
-      return corporationAllianceOf(bridgeAsk, corporationID);
+      return corporationRecords.get(bridgeAsk, corporationID).then(row => {
+        const allianceID = Number(unwrapLong(row.fields.allianceID));
+        return allianceID > 0 ? allianceID : null;
+      });
     },
     characterInfoHeader(characterID) {
       return readCharacterInfoHeader(bridgeAsk, characterID);
@@ -27151,6 +28711,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     deleteFitting,
     deleteFittings,
     shipNameAsked: readonlySignal(shipNameAskedSignal),
+    inventoryPasswordAsked: readonlySignal(inventoryPasswordAskedSignal),
+    answerInventoryPassword,
     answerShipName,
     setDestination,
     addWaypoint,
@@ -27229,13 +28791,26 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     async selectCharacter(characterID) {
       if (sessionClosing) throw new Error("This pilot session is being released.");
+      retireInventoryPasswords();
+      inventoryPasswordSwitching = true;
       // A refused switch leaves the previous pilot held. Keep its recovery
       // proof and live state until the server actually selects the new one.
-      const result = await api.selectCharacter(characterID, callOptions);
+      const result = await (async () => {
+        try { return await api.selectCharacter(characterID, callOptions); }
+        finally { inventoryPasswordSwitching = false; }
+      })();
       // accountsvc.ProcessSessionChange: another character, and what the account service kept was the last one's.
       walletReads.forget();
+      corporationWealthReads.forget();
+      corporationWealthSignal.set(null);
+      closeMoneyTransfer();
+      infoWindows.reset();
+      corporationRecords.reset();
+      corporationAggression.reset();
       walletJournalGeneration += 1;
       walletJournalSignal.set(NO_WALLET_JOURNAL);
+      corpWalletJournalGeneration += 1;
+      corpWalletJournalSignal.set(NO_CORP_WALLET_JOURNAL);
       walletOverviewGeneration += 1;
       walletOverviewSignal.set(NO_WALLET_OVERVIEW);
       walletSharesSignal.set(NO_WALLET_SHARES);
@@ -27249,7 +28824,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // skillQueueSvc.ReInitialize: and what the queue service had reckoned of the training slots.
       trainingSlots.forget();
       conversations.reset();
+      directTrades.reset();
+      duelInvitationSignal.set(null);
       requestGeneration++;
+      cancelCorporationCEOChoice();
+      cancelCorporationAward();
       recoveryGeneration++;
       recoveryTask = null;
       recoveryIDs.clear();
@@ -27292,8 +28871,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadInventory,
 
     async stackContainer(target) {
-      // invControllers.StackAll (382 to 388): PermissionDenied asks for the container's password, which the page
-      // does not ask yet; any other refusal goes to the client's handler.
+      // invControllers.StackAll382-407 has a distinct legacy PermissionDenied branch; its installed popup
+      // composition is broken. Secure containers' working EnterPassword proxy is a separate pending unit.
       await runMutation(() => stackPlaceNow(target), STACK_KEPT);
     },
 
@@ -27391,6 +28970,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     },
 
     openContainer,
+    selectSafetyDivision(divisionID) {
+      const container = store.inventory.get().container;
+      const division = container?.safety?.divisions.find(division => division.divisionID === divisionID);
+      if (!container?.safety || !division) return;
+      store.apply({ type: "inventory/container", container: { ...container,
+        rows: division.name === null ? [] : division.rows,
+        error: division.name === null ? "This corporation delivery division could not be named." : null,
+        safety: { ...container.safety, divisionID } } });
+    },
     openShipBays,
     readMiningSupportCapabilities,
     readMiningSupportServices,
@@ -27427,9 +29015,6 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       // One stack's want of room is the client's own to answer (invControllers._AddItem, 229 to 290: noRoomForAll);
       // many stacks' goes to its handler, as every other refusal does.
       await runInventoryAction(async () => {
-        // Into the corporation's hangar from anywhere else, the pilot is asked first (BaseCorpContainer.oneWay:
-        // __AddItem 197 to 202 for one stack, AddItems 529 for many); Cancel moves nothing.
-        if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
         // Between the hangar, the ship's hold, its bays and a container, the client's own call
         // (bridge/inventoryWrites.ts), judged by the places' rows refreshed, the source's above all: a thing moved can
         // arrive under a new number. A bay is one the page knows the flag of (BAY_FLAGS).
@@ -27441,13 +29026,30 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           if (present.length === 0) {
             throw new Error("Those items are no longer where the panel last saw them; refresh and try again.");
           }
+          // Native AddItems asks for the full-stack recovery price BEFORE its quantity and one-way prompts.
+          const sourceWrap = present[0]?.locationID === undefined ? null : safetyWrapAncestor(present[0].locationID, safetyItemCache);
+          if (sourceWrap !== null && !(await acceptSafetyRecovery(bridgeAsk, sourceWrap, present.map(row => row.itemID), async tax => {
+            await wordsNow(["UI/Common/Confirm", "UI/Inventory/AssetSafetyRecoveryConfirmation", "UI/Util/FmtIsk", "UI/Util/FmtIskNoDecimal"]);
+            const template = store.words.get().templates["UI/Inventory/AssetSafetyRecoveryConfirmation"];
+            const writeIsk = (value: number, places: number) => iskWords(value, places, store.words.get().templates, () => "")
+              ?? `${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ISK`;
+            const question = typeof template === "string" ? plainText(formatTemplate(template, { tax }, {
+              nameOf: () => "", writeIsk,
+            })) : `Recovering the selected items will cost ${writeIsk(tax, 2)}. Do you wish to continue?`;
+            return askDialog("CustomQuestion", { type: "dict", entries: [["header", templateWords("UI/Common/Confirm", {}, "Confirm")], ["question", question]] }, question);
+          }))) return null;
+          // BaseCorpContainer's one-way prompt follows recovery acceptance (AddItems529).
+          if (to.kind === "corp" && !(from.kind === "corp" && from.division === to.division) && !(await askOneWayMove())) return null;
+          if (to.kind === "container" && store.inventory.get().container?.itemID === to.itemID && store.inventory.get().container?.typeID === 60) {
+            throw new Error("Items cannot be added to Asset Safety deliveries.");
+          }
           const [destination, source] = [await inventoryOfPlace(to), await inventoryOfPlace(from)];
           // invControllers._AddItem's two tries: a single stack's want of room answered as the client answers it,
           // the second try with the quantity the pilot gave (noRoomForAll).
           let quantity = qty ?? null;
           for (let attempt = 0; ; attempt += 1) {
             try {
-              await moveItemsCall(bridgeDo, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
+              await moveItemsCall(inventoryMoves.act, destination.inventory, to as MovePlace, source.liesIn, present, quantity);
               break;
             } catch (error) {
               if (present.length !== 1) throw error;
@@ -27491,7 +29093,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           throw new Error("Those stacks are no longer where the panel last saw them; refresh and try again.");
         }
         const where = await inventoryOfPlace(place);
-        await mergeStacksCall(bridgeDo, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
+        await mergeStacksCall(inventoryMoves.act, where.inventory, where.liesIn, sourceItemID, destinationItemID, source.quantity);
         await refreshOpenPlaces();
         const after = rowsAt(place)?.find((row) => row.itemID === destinationItemID);
         const merged = after ? after.quantity - destination.quantity : 0;
@@ -28455,12 +30057,61 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corporationMemberRoleOptions,
     memberDetailsShown: readonlySignal(memberDetailsSignal),
     showMemberDetails,
+    corporationMemberMenu,
+    corporationQuitMenu,
+    corporationExpelMenu,
+    corporationCEOMenu,
+    corporationAwardMenu,
+    corporationInviteMenu,
+    corporationAwardAsk: readonlySignal(corporationAwardAskSignal),
+    selectCorporationAward,
+    answerCorporationAward,
+    corporationCEOChoice: readonlySignal(corporationCEOChoiceSignal),
+    selectCorporationCEO,
+    answerCorporationCEO,
+    corporationRoleAllowance,
+    corporationApplicationsChanged: readonlySignal(corporationApplicationsChangedSignal),
+    corporationDecorationsChanged: readonlySignal(corporationDecorationsChangedSignal),
+    corporationDecorations,
+    corporationDecorationCreationEnabled,
+    medalDesignerShown: readonlySignal(medalDesignerSignal),
+    showMedalDesigner,
+    closeMedalDesigner,
+    medalColourPaletteOpened() { if (store.station.get().online) sayDialog("ComboExpand", null, ""); },
+    corporationWalletChoice: readonlySignal(corporationWalletChoiceSignal),
+    selectCorporationWallet,
+    answerCorporationWallet,
+    prepareCorporationMedal,
+    createCorporationMedal,
+    corporationMedalAwardees,
+    medalShowInfo,
+    corporationApplicationsRequested: readonlySignal(corporationApplicationsRequestedSignal),
+    requestCorporationApplications: () => corporationApplicationsRequestedSignal.set(corporationApplicationsRequestedSignal.get() + 1),
+    serveCorporationApplicationsRequest: n => { if (corporationApplicationsRequestedSignal.get() === n) corporationApplicationsRequestedSignal.set(0); },
+    corporationApplications,
+    corporationApplicationDecision,
+    corporationApplicationsExpanded,
+    openCorporationMemberDetails,
+    memberDetailsPanel,
     corporationMemberDetails,
     corporationMemberRoleBase,
     corporationMemberIDs,
+    corporationAdministration,
+    corporationMemberQueryContext,
+    corporationMemberQueryBases,
+    corporationMemberQuery,
+    async corporationMemberQueryNeedsValue(current) {
+      const scope = captureMemberOperation(current);
+      const text = "UI/Shared/PleaseTypeSomething";
+      await wordsNow([text]); scope.current();
+      const info = templateWords(text, {}, "Please type something.");
+      sayDialog("CustomInfo", { type: "dict", entries: [["info", info]] }, info);
+    },
+    memberQueryPreference: name => memberQuerySetting(store.session.get().accountID, name, settingsStorage),
     corporationMemberTitles,
     corporationMemberSummary,
     corporationSummaryGroupOpen,
+    corporationDecorationGroupOpen,
     saveCorporationMember,
     giveCorporationShares,
     primeContactsOnline,
@@ -28491,6 +30142,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     corpLogoLibrary: readonlySignal(corpLogoLibrarySignal),
     imageServer: readonlySignal(imageServerSignal),
     loadImageServer,
+    directTrades,
+    safetyDeliveries: readonlySignal(safetyDeliveriesSignal),
+    startDirectTrade,
+    duelInvitation: readonlySignal(duelInvitationSignal),
+    startDuel,
+    answerDuel,
+    expireDuel,
+    closeDuel,
+    capturePortraits,
     corpLogos: readonlySignal(corpLogosSignal),
     requestCorpLogos,
     loadOwnerLogos,
@@ -28599,6 +30259,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
 
     loadWallet,
     pilotWealth,
+    corporationWealth: accountKey => corporationWealthReads.fresh(accountKey),
+    cachedCorporationWealth: accountKey => corporationWealthReads.cached(accountKey),
+    corporationWealthChanged: readonlySignal(corporationWealthSignal),
+    corporationCashMenu,
+    get ownerDoubleClickPreference() { return ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).value; },
+    infoWindows,
+    get infoWindowReusePreference() { return infoWindowSetting(store.session.get().accountID, settingsStorage).value; },
+    scrollSortPreference: scrollID => scrollSortSetting(store.session.get().accountID, scrollID, settingsStorage),
+    scrollWidthsPreference: scrollID => scrollWidthsSetting(store.session.get().accountID, scrollID, settingsStorage),
+    setInfoWindowReusePreference: value => infoWindowSetting(store.session.get().accountID, settingsStorage).set(value),
+    setOwnerDoubleClickPreference: value => ownerDoubleClickSetting(store.session.get().accountID, settingsStorage).set(value),
+    ownerEntryDoubleClick,
+    ownerEntryInfo,
+    openMoneyTransfer,
+    confirmMoneyTransfer,
+    closeMoneyTransfer,
+    moneyTransfer: readonlySignal(moneyTransferSignal),
     giveMoney,
     giveIskFromWallet,
 
@@ -28757,6 +30434,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     loadMarketTransactions,
     walletJournal: readonlySignal(walletJournalSignal),
     loadWalletJournal,
+    corpWalletJournal: readonlySignal(corpWalletJournalSignal),
+    loadCorpWalletJournal,
     walletOverview: readonlySignal(walletOverviewSignal),
     abyssalTimer: readonlySignal(abyssalTimerSignal),
     collapseWarning: readonlySignal(collapseWarningSignal),
@@ -29163,7 +30842,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try {
         await api.releaseSession(callOptions);
         conversations.reset();
+        directTrades.reset();
+        duelInvitationSignal.set(null);
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
+        closeMoneyTransfer();
+        infoWindows.reset();
+        corporationRecords.reset();
+        corporationAggression.reset();
         requestGeneration++;
+        cancelCorporationCEOChoice();
+        cancelCorporationAward();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();
@@ -29188,7 +30877,17 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         // must never ask the server to clear the cookie belonging to another slot.
         if (!(options.perSessionToken && callOptions.token === null)) await api.logout(callOptions);
         conversations.reset();
+        directTrades.reset();
+        duelInvitationSignal.set(null);
+        corporationWealthReads.forget();
+        corporationWealthSignal.set(null);
+        closeMoneyTransfer();
+        infoWindows.reset();
         requestGeneration++;
+        corporationRecords.reset();
+        corporationAggression.reset();
+        cancelCorporationCEOChoice();
+        cancelCorporationAward();
         recoveryGeneration++;
         recoveryTask = null;
         recoveryIDs.clear();

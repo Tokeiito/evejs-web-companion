@@ -15,6 +15,8 @@ export interface CorporationMember {
   readonly masks: Readonly<Record<typeof MEMBER_ROLE_FIELDS[number], bigint>>;
 }
 export interface CorporationMemberDetails {
+  /** Page owner/window lifetime, retained by local drafts; never sent to the server. */
+  readonly assertCurrent?: () => void;
   readonly member: CorporationMember;
   readonly name: string;
   readonly viewerIsCEO: boolean;

@@ -36,7 +36,8 @@ function asking(answers: Record<string, JsonValue | (() => JsonValue | Promise<J
 }
 
 const ROW = corporationRow({ corporationID: 98000001, division1: "Hangar One", division2: "Hangar Two", walletDivision1: "never read", walletDivision2: "Payroll", walletDivision3: "  ", walletDivision5: "Ships" });
-const NAMES = { 1: null, 2: "Payroll", 3: null, 4: null, 5: "Ships", 6: null, 7: null };
+// Original bco_corporations.GetDivisionNames138-154 retains nonempty whitespace.
+const NAMES = { 1: null, 2: "Payroll", 3: "  ", 4: null, 5: "Ships", 6: null, 7: null };
 const ANSWERS = {
   "account.GetCashBalance": 1000165000,
   "account.GetWalletDivisionsInfo": { type: "list", items: [] },
@@ -262,7 +263,9 @@ test("the pilot's own ISK alone is one call, asked of the server each time: a gu
 test("a wallet division is named by the corporation's wallet columns, as the client names it: never by its hangar's, and the first by none", () => {
   assert.deepEqual(divisionNamesOf(ROW), Object.fromEntries(Object.entries(NAMES)));
   // Every wallet division named, the master wallet's column among them: the first is still the client's own to name.
-  const all = corporationRow(Object.fromEntries(Array.from({ length: 7 }, (unused, index) => [`walletDivision${index + 1}`, `Wallet ${index + 1}`])));
+  // Native GetCorporation now preserves Unicode (original LabelCore CP1252
+  // consumer evidence cdx2705); the client uses the truthiness of these names.
+  const all = corporationRow(Object.fromEntries(Array.from({ length: 7 }, (unused, index) => [`walletDivision${index + 1}`, { type: "wstring", value: `Wallet ${index + 1}` }])));
   assert.deepEqual(divisionNamesOf(all), { 1: null, 2: "Wallet 2", 3: "Wallet 3", 4: "Wallet 4", 5: "Wallet 5", 6: "Wallet 6", 7: "Wallet 7" });
   // The hangar's names alone name no wallet division.
   const hangars = corporationRow(Object.fromEntries(Array.from({ length: 7 }, (unused, index) => [`division${index + 1}`, `Hangar ${index + 1}`])));
