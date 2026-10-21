@@ -308,6 +308,7 @@ function createPilotDogma({
   createNativeClientStaticLoadData = null,
   createNativeClientClock = null,
   createNativeClientLog = null,
+  createNativeClientPreferences = null,
   nativeTypeNames = null,
   onNumericChargeError = () => {},
   onNumericEffectActivated = () => {},
@@ -318,6 +319,20 @@ function createPilotDogma({
   const clientStaticLoadData = createNativeClientStaticLoadData ? createNativeClientStaticLoadData({ groupData: clientStaticGroupData, definitionData: clientStaticAttributeData, typeData: nativeClientStaticTypeData }) : null;
   let clientClock = null, pendingClientClock = null;
   let clientLog = null, pendingClientLog = null;
+  let clientPreferences = null, pendingClientPreferences = null;
+  function initializeNativeClientPreferences() {
+    if (clientPreferences !== null) return Promise.resolve(clientPreferences);
+    if (pendingClientPreferences !== null) return pendingClientPreferences;
+    if (typeof createNativeClientPreferences !== "function") throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client preference owner");
+    const reading = Promise.resolve().then(createNativeClientPreferences).then(preferences => {
+      if (!preferences || typeof preferences.GetValue !== "function" || !preferences.handler) throw new ClientDogmaConstructorPrimitiveNotReadyError("actual installed preference owner");
+      clientPreferences = preferences;
+      return preferences;
+    });
+    pendingClientPreferences = reading;
+    const forget = () => { if (pendingClientPreferences === reading) pendingClientPreferences = null; };
+    reading.then(forget, forget); return reading;
+  }
   function initializeNativeClientLog() {
     if (clientLog !== null) return Promise.resolve(clientLog);
     if (pendingClientLog !== null) return pendingClientLog;
@@ -1332,6 +1347,11 @@ function createPilotDogma({
     // Backend prerequisite only. logmodule's GetChannel/ChannelWrapper and
     // real prefs ownership must precede CoreService construction.
     initializeNativeClientLog,
+    initializeNativeClientPreferences,
+    nativeClientPreferences: () => {
+      if (clientPreferences === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("installed client preference owner");
+      return clientPreferences;
+    },
     nativeClientLog: () => {
       if (clientLog === null) throw new ClientDogmaConstructorPrimitiveNotReadyError("native client log backend");
       return clientLog;

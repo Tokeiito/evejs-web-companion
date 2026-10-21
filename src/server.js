@@ -40,6 +40,7 @@ const { createClientDogmaStaticLoadData } = require("./gamePort/clientDogmaStati
 const { loadClientWindowsClockPrimitives } = require("./gamePort/clientWindowsClockPrimitives");
 const { createClientBlueWallclock } = require("./gamePort/clientBlueWallclock");
 const { createClientFileLogger } = require("./gamePort/clientFileLogger");
+const { createClientPreferencesProvider } = require("./gamePort/clientPreferences");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -205,6 +206,13 @@ const someoneOnGamePort = pilotSetting !== null &&
 const nativeAttributeData = createGodmaAttributeData({
   dogmaAttributes: () => clientBuiltData.table("dogmaAttributesOrdered"),
 });
+// Explicit companion profile, shared on disk but independently parsed by each
+// emulated client. This never selects or changes a nearby retail prefs profile.
+const nativePreferencesProvider = createClientPreferencesProvider({
+  clientRoot: config.clientRoot, python: config.clientPython,
+  settingsRoot: path.resolve(config.dataDir, "native-client-settings"),
+  cacheRoot: path.resolve(config.dataDir, "native-preferences"),
+});
 const gamePortPilots = options.gamePortPilots !== undefined
   ? options.gamePortPilots
   : someoneOnGamePort && !options.eveGatewayClient
@@ -258,6 +266,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
       }),
       createNativeClientClock: async () => createClientBlueWallclock({ primitives: await loadClientWindowsClockPrimitives() }),
       createNativeClientLog: () => createClientFileLogger({ directory: path.resolve(config.dataDir, "native-client-logs") }),
+      createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
         ...readers,
         constants: () => clientConstants.dogmaStaticLoadTail(),
