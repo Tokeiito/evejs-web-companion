@@ -1,9 +1,9 @@
 "use strict";
 
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
-// This is cached numeric value/charge state, not GetAttribute's static defaults,
-// effect rows, ItemWrapper, inventory metadata or clientDogmaLocation nodes.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined }) {
+// Cached numeric value/charge state. A native caller supplies GetAttribute for
+// notice comparison; definitions, effect rows, metadata and nodes live outside.
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null }) {
   const attributes = new Map(), charged = new Map();
   // Python retains the numeric class when assigning a decoded value. Keep its
   // immutable source record beside the primitive, before normalization/copying.
@@ -76,7 +76,9 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
     const values = attributes.get(itemID);
     if (!values) return false;
     const name = attributeKey(attributeID), pairs = namedPairs();
-    const old = read(itemID, name);
+    // ApplyAttributeChange2536 reads GetAttribute, including its default on
+    // an uncached name, before deciding that the incoming value is redundant.
+    const old = readAttribute ? readAttribute(itemID, attributeID) : read(itemID, name);
     if (equal(old, amount)) return false;
     values.set(name, amount);
     if (!kinds.has(itemID)) kinds.set(itemID, new Map());
