@@ -513,3 +513,25 @@ def _create_localization_settings(boot_root, preferences):
     result.internal, result.qa, result.bilingual = internal, qa, bilingual
     result.settings, result.constants, result.commonutils = selected, constants, commonutils
     return result
+
+
+def _prepare_localization_data(extension, main_filename, english_filename):
+    # Explicit host extension/indexed-file I/O phase. The actual installed
+    # cPickle and native module own full tuples, metadata and token dictionaries.
+    # This does not execute Blue.LoadExtension/ResFile/statistics zones or the
+    # original Localization loader/constructor and does not register handlers.
+    import imp, os, cPickle, types
+    backend = imp.load_dynamic('_evelocalization', extension)
+    if os.path.normcase(os.path.abspath(backend.__file__)) != os.path.normcase(os.path.abspath(extension)):
+        raise ImportError('Installed localization module path differs')
+    with open(main_filename, 'rb') as source:
+        main = cPickle.loads(source.read())
+    with open(english_filename, 'rb') as source:
+        english = cPickle.loads(source.read())
+    if not isinstance(main, dict) or not isinstance(english, tuple) or len(english) != 2 or english[0] != 'en-us' or not isinstance(english[1], dict):
+        raise ValueError('Unexpected installed main/English localization data')
+    backend.SetPrimaryLanguage(english[0])
+    backend.LoadMessageData(*english)
+    result = types.ModuleType('companion.native_localization_data')
+    result.backend, result.main, result.english = backend, main, english
+    return result

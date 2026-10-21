@@ -46,6 +46,7 @@ const { createClientTaskletTimer } = require("./gamePort/clientTaskletTimer");
 const { createClientLocalizationSettings } = require("./gamePort/clientLocalizationSettings");
 const { createClientStaticService } = require("./gamePort/clientStaticService");
 const { createClientNativeBuiltData } = require("./clientData/clientNativeBuiltData");
+const { createClientNativeLocalization } = require("./clientData/clientNativeLocalization");
 const { createMapLocationInfo } = require("./mapLocationInfo");
 const { createFactionInfo } = require("./factionInfo");
 const { retailForm } = require("./gamePort/retailCalls");
@@ -280,6 +281,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
         attributeConstants: () => clientConstants.dogmaStaticAttributes(),
         typeAttributeConstants: () => clientConstants.dogmaStaticTypeAttributes(),
         createLocalizationSettings: () => createClientLocalizationSettings({ provider: nativePreferencesProvider, preferences: owners.preferences, clientRoot: config.clientRoot }),
+        localizationData: createClientNativeLocalization({ provider: nativePreferencesProvider, clientRoot: config.clientRoot, cacheRoot: path.resolve(config.dataDir, "native-preferences/localization") }),
       }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
