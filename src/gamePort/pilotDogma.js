@@ -6,6 +6,8 @@ const { createGodmaInventoryRows } = require("./godmaInventoryRows");
 const { createGodmaNumericValues } = require("./godmaNumericValues");
 const { createGodmaNumericEffects } = require("./godmaNumericEffects");
 const { createGodmaPrimeChannel } = require("./godmaPrimeChannel");
+const { createGodmaAttributeGetter } = require("./godmaAttributeGetter");
+const { GodmaAttributeDataNotReadyError } = require("./godmaAttributeData");
 const { orderEntries } = require("./py27");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
@@ -321,6 +323,17 @@ function createPilotDogma({
   // Numeric backing metadata is independent of refreshed GET-INFO rows and of
   // clientDogmaLocation loaded nodes. GetItem's fresh wrapper is not stored here.
   const primeInventory = createGodmaInventoryRows({ rowFields, registeredLocations });
+  const nativeAttributeGetter = nativeAttributeData ? createGodmaAttributeGetter({
+    data: nativeAttributeData,
+    cacheRecord: (itemID, attributeID, at) => numericValues.record(itemID, attributeID, at),
+    inventoryItem: itemID => primeInventory.get(itemID),
+    typeFacts: typeID => typeFacts(number(typeID)),
+    fieldsOf: row => new Map(Object.entries(rowFields(row) ?? {})),
+  }) : null;
+  function nativeAttributeRecord(itemID, attributeID, at = now()) {
+    if (!nativeAttributeGetter) throw new GodmaAttributeDataNotReadyError("Native numeric getter requires installed attribute definitions.");
+    return nativeAttributeGetter.record(key(itemID), attributeID, at);
+  }
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
   /** item key -> Map(heatID -> { value, at, sources: Set(moduleID) }): the item's HeatAttributes. */
@@ -1219,6 +1232,10 @@ function createPilotDogma({
     // from Number.isInteger. Derived recharge results have unknown kind here.
     numericValueRecord: (itemID, attributeID, at = now()) => numericValues.record(key(itemID), attributeID, at),
     numericChargeInputs: (itemID, attributeID) => numericValues.chargeInputs(key(itemID), attributeID),
+    // Synchronous known numeric attributes only: native cached/default getter.
+    // No implicit ready(), typeDogma/RPC, loaded node or wrapper computation.
+    getAttributeValueByID: (itemID, attributeID, at = now()) => nativeAttributeRecord(itemID, attributeID, at).value,
+    getAttributeRecordByID: nativeAttributeRecord,
     // Named backing fields only, not EffectWrapper methods, native eventbus
     // completion or clientDogmaLocation passive/registered-node state.
     numericEffectRow: (itemID, effectName) => numericEffects?.get(itemID, effectName) ?? null,

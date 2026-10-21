@@ -34,6 +34,10 @@ function createGodmaAttributeData({ dogmaAttributes } = {}) {
   if (typeof dogmaAttributes !== "function") throw new TypeError("An installed ordered dogma attribute reader is required.");
   let definitions = null;
   let pending = null;
+  // Original installed dogmaAttributesLoader defaultValue fields are PyFloat
+  // for all 2855 definitions (cdxdefaultgetteragent1 native loader oracle).
+  // This is static-data provenance, not a marshal opcode or a JS value guess.
+  const defaultKind = Object.freeze({ kind: "real", source: "installed-dogma-default" });
 
   function prepared() {
     if (definitions === null) throw new GodmaAttributeDataNotReadyError();
@@ -92,6 +96,22 @@ function createGodmaAttributeData({ dogmaAttributes } = {}) {
       if (!byID.has(id)) throw new KeyError(id);
       return byID.get(id).name;
     },
+    // Native GetAttributeValueByID uses dict.get, without dogma.data's string
+    // identity coercion. Missing/None IDs return before any inventory lookup.
+    definitionByID(attributeID) {
+      const { byID } = prepared();
+      if (typeof attributeID === "boolean") attributeID = Number(attributeID);
+      if (typeof attributeID === "bigint") {
+        if (attributeID < BigInt(Number.MIN_SAFE_INTEGER) || attributeID > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+        attributeID = Number(attributeID);
+      }
+      return typeof attributeID === "number" ? byID.get(attributeID) : undefined;
+    },
+    defaultRecordByName(name) {
+      const definition = prepared().byName.get(name);
+      if (!definition) throw new KeyError(name);
+      return Object.freeze({ value: definition.defaultValue, kind: definition.defaultValue === null ? undefined : defaultKind });
+    },
     // Map snapshots prevent callers from replacing the provider's identity
     // definitions. By-name winners share the exact by-ID definition object.
     byID: () => new Map(prepared().byID),
@@ -100,4 +120,4 @@ function createGodmaAttributeData({ dogmaAttributes } = {}) {
   return api;
 }
 
-module.exports = { createGodmaAttributeData };
+module.exports = { createGodmaAttributeData, GodmaAttributeDataNotReadyError };
