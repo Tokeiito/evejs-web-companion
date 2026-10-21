@@ -331,3 +331,106 @@ def _attach_static_attribute_data(service_types, raw, constant_values):
     base.LoadAttributes = types.FunctionType(definition(definition(base_source, 'BaseDogmaStaticSvc'),
                                                        'LoadAttributes'), globals)
     return data
+
+
+def _attach_static_phases(service_types, data, raw_type_dogma, raw_effects, raw_types, constant_values):
+    # Extend THIS client's original data namespace and classes. Native roots,
+    # captured rows, defaultdict misses and memoizer lifetimes stay Python's.
+    import types
+    from collections import defaultdict, namedtuple
+    from caching.memoize import Memoize as memoize
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed static phase module: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [value for value in code.co_consts
+                   if isinstance(value, types.CodeType) and value.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed static phase definition: ' + name)
+        return matches[0]
+
+    base = service_types.BaseDogmaStaticSvc
+    base_globals = base.__dict__['__init__'].func_globals
+    if base_globals['dogma_data'] is not data:
+        raise ValueError('Static phase data belongs to another native service')
+    const = base_globals['const']
+    for name, value in constant_values.iteritems():
+        setattr(const, name, value)
+    namespace = data.__dict__
+    loader = data.DogmaAttributes.__bases__[0]
+    source = module_code('dogma.data', '/packages/dogma/data.py')
+    for name, extension, raw in (('TypeDogma', 'typeDogmaLoader', raw_type_dogma),
+                                 ('DogmaEffects', 'dogmaEffectsLoader', raw_effects)):
+        namespace[extension] = sys.modules[extension]
+        body = types.FunctionType(definition(source, name), namespace)
+        cls = type(name, (loader,), body())
+        cls.__binary__ = raw
+        namespace[name] = cls
+
+    # Actual installed evetypes physical getters and exceptions. Its other
+    # localization/group/engine APIs are not fabricated by this selected host.
+    evetypes = types.ModuleType('evetypes')
+    type_globals = evetypes.__dict__
+    type_globals['__builtins__'] = __builtins__
+    types_data = types.ModuleType('evetypes.data')
+    types_data.__dict__.update({'__builtins__': __builtins__, 'typesLoader': sys.modules['typesLoader']})
+    type_source = module_code('evetypes.data', '/packages/evetypes/data.py')
+    body = types.FunctionType(definition(type_source, 'Types'), types_data.__dict__)
+    types_data.Types = type('Types', (loader,), body())
+    types_data.Types.__binary__ = raw_types
+    type_globals['Types'] = types_data.Types
+    evetypes.data = types_data
+    type_source = module_code('evetypes', '/packages/evetypes/__init__.py')
+    for name in ('TypeNotFoundException', 'TypeAttributeNotFoundException'):
+        body = types.FunctionType(definition(type_source, name), type_globals)
+        type_globals[name] = type(name, (Exception,), body())
+    for name in ('GetTypes', 'GetType', '_GetAttributeForType', 'Exists',
+                 'GetMass', 'GetCapacity', 'GetVolume', 'GetRadius'):
+        type_globals[name] = types.FunctionType(definition(type_source, name), type_globals)
+    namespace['evetypes'] = evetypes
+    identity = types.ModuleType('dogma.identity')
+    identity.__dict__['__builtins__'] = __builtins__
+    identity_source = module_code('dogma.identity', '/packages/dogma/identity.py')
+    namespace['get_safe_dogma_identity'] = types.FunctionType(
+        definition(identity_source, 'get_safe_dogma_identity'), identity.__dict__)
+    namespace['DogmaTypeAttribute'] = namedtuple('DogmaTypeAttribute', ['attributeID', 'value'])
+    namespace['DogmaTypeAttribute'].__module__ = 'dogma.data'
+    for name in ('attributeMass', 'attributeCapacity', 'attributeVolume', 'attributeRadius'):
+        namespace[name] = constant_values[name]
+    memoized = ('get_type_attributes', 'get_type_attributes_by_id',
+                'get_all_effects_by_name', 'get_all_effects_by_id', 'get_all_type_ids_and_effects',
+                'get_effects_indexed_by_type_id_and_effect_id', 'get_effects_indexed_by_effect_id_and_type_id')
+    for name in ('_get_type_dogma', 'get_type_dogma', 'get_type_attributes',
+                 'has_type_attributes', 'get_type_attributes_by_id', 'get_type_attribute',
+                 '_get_effects', 'get_all_effects_by_name', 'get_all_effects_by_id',
+                 'get_all_type_ids_and_effects', 'get_effects_indexed_by_type_id_and_effect_id',
+                 'get_effects_indexed_by_effect_id_and_type_id'):
+        defaults = (None,) if name == 'get_type_attribute' else None
+        function = types.FunctionType(definition(source, name), namespace, name, defaults)
+        namespace[name] = memoize(function) if name in memoized else function
+
+    client_globals = {'__name__': 'eve.client.script.dogma.clientDogmaStaticSvc',
+                      '__builtins__': __builtins__, 'defaultdict': defaultdict,
+                      'dogma_data': data, 'const': const, 'evetypes': evetypes}
+    client_source = module_code('eve.client.script.dogma.clientDogmaStaticSvc',
+                                '/eve/client/script/dogma/clientDogmaStaticSvc.py')
+    for name in ('AttributesByTypeLookupDict', 'AttributesByTypeAttribute'):
+        body = types.FunctionType(definition(client_source, name), client_globals)
+        client_globals[name] = type(name, (defaultdict,), body())
+    client_code = definition(client_source, 'ClientDogmaStaticSvc')
+    service_types.ClientDogmaStaticSvc.LoadTypeAttributes = types.FunctionType(
+        definition(client_code, 'LoadTypeAttributes'), client_globals)
+    base_source = definition(module_code('eve.common.script.dogma.baseDogmaStaticSvc',
+                                        '/eve/common/script/dogma/baseDogmaStaticSvc.py'), 'BaseDogmaStaticSvc')
+    for name in ('get_effects_indexed_by_type_id_and_effect_id', 'get_effects_indexed_by_effect_id_and_type_id'):
+        base_globals[name] = namespace[name]
+    base_globals['evetypes'] = evetypes
+    for name in ('LoadEffects', 'LoadTypeEffects', 'GetTypeAttribute', 'GetTypeAttribute2', 'GetTypeAttributes'):
+        defaults = (False,) if name == 'LoadTypeEffects' else (None,) if name == 'GetTypeAttribute' else None
+        setattr(base, name, types.FunctionType(definition(base_source, name), base_globals, name, defaults))
+    return evetypes

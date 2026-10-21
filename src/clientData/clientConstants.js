@@ -51,6 +51,11 @@ const CONSTANTS = Object.freeze({
     given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"])]),
     names: Object.freeze(["effectHiPower", "effectLoPower", "effectMedPower", "effectSkillEffect", "dgmEffPassive", "dgmEffSystem"]),
   }),
+  dogmaStaticTypeAttributes: Object.freeze({
+    module: "dogma/const.pyj",
+    given: Object.freeze([Object.freeze(["inventorycommon.const", "inventorycommon/const.pyj"])]),
+    names: Object.freeze(["attributeMass", "attributeCapacity", "attributeVolume", "attributeRadius"]),
+  }),
   // BaseDogmaStaticSvc.LoadAttributes79-147 and dogma.data's charge filter.
   dogmaStaticAttributes: Object.freeze({
     module: "dogma/const.pyj",
@@ -241,6 +246,13 @@ function createClientConstants({ clientRoot = null, python = "python", run = run
         if (!Object.hasOwn(values, name) || !Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not an integer constant.`);
       }
       return Object.freeze(Object.fromEntries(DOGMA_STATIC_ATTRIBUTE_NAMES.map(name => [name, values[name]])));
+    }),
+    dogmaStaticTypeAttributes: () => read("dogmaStaticTypeAttributes", values => {
+      const names = CONSTANTS.dogmaStaticTypeAttributes.names;
+      for (const name of names) {
+        if (!Object.hasOwn(values, name) || !Number.isSafeInteger(values[name])) throw new Error(`The client's ${name} is not an integer constant.`);
+      }
+      return Object.freeze(Object.fromEntries(names.map(name => [name, values[name]])));
     }),
     chatRules: async () => {
       const [roles, owner] = await Promise.all([

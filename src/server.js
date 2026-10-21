@@ -277,6 +277,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
         constants: () => clientConstants.dogmaStaticEffects(),
         builtData: createClientNativeBuiltData({ provider: nativePreferencesProvider, clientRoot: config.clientRoot }),
         attributeConstants: () => clientConstants.dogmaStaticAttributes(),
+        typeAttributeConstants: () => clientConstants.dogmaStaticTypeAttributes(),
       }),
       createNativeClientPreferences: () => nativePreferencesProvider.createOwner(),
       createNativeClientStaticLoadData: readers => createClientDogmaStaticLoadData({
