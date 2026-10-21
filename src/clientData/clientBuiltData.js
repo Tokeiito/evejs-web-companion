@@ -100,6 +100,7 @@ const TABLES = Object.freeze({
   // Full groups keep category/name-field absence distinct from a projection
   // silently dropping a row. The source caches retain every group, including0.
   groupsOrdered: Object.freeze({ loader: "groupsLoader", resource: "res:/staticdata/groups.fsdbinary", keyOrder: true }),
+  categoriesOrdered: Object.freeze({ loader: "categoriesLoader", resource: "res:/staticdata/categories.fsdbinary", keyOrder: true }),
   // evetypes.GetNameID: every installed type, including type0, has this field.
   typeNameIDs: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "typeNameID" }),
   typeFactions: Object.freeze({ loader: "typesLoader", resource: "res:/staticdata/types.fsdbinary", attribute: "factionID" }),

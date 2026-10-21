@@ -284,6 +284,7 @@ const gamePortPilots = options.gamePortPilots !== undefined
         builtData: createClientNativeBuiltData({ provider: nativePreferencesProvider, clientRoot: config.clientRoot }),
         attributeConstants: () => clientConstants.dogmaStaticAttributes(),
         typeAttributeConstants: () => clientConstants.dogmaStaticTypeAttributes(),
+        loadTailConstants: async () => ({ ...await clientConstants.dogmaStaticLoadTail(), ...await clientConstants.dogmaStaticGroups() }),
         createLocalizationSettings: () => {
           if (owners.nativeSessionOwner?.preferences !== owners.preferences) throw new Error("Static construction must retain the pre-login native preference owner.");
           return owners.nativeSessionOwner.localizationSettings;

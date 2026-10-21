@@ -20,11 +20,12 @@ const constantNames = Object.freeze(["effectHiPower", "effectLoPower", "effectMe
  * prepareStdLogging() retains original per-client root/Manager/handler/FMT_EVE
  * over those same owners. prepareErrorLogging() separately attaches the original
  * pre-UI error graph; prepareLocalizationLookup() extends the same settings
- * instance with original Get/Important methods and actual main-label data. No full
- * Run/Load/ServiceManager state,
- * generic config/counter services, full client or IM readiness is published.
+ * instance with original Get/Important methods and actual main-label data.
+ * prepareFullLoad() binds the original timed Load and its native group/cfg tail.
+ * Run, reload monitors, ServiceManager state, generic config/counter services
+ * and full client/IM readiness remain separate.
  */
-async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null, createLocalizationLookup = null }) {
+async function createClientStaticService({ provider, clock, logging, preferences, taskletTimer = null, constants, builtData = null, attributeConstants = null, typeAttributeConstants = null, loadTailConstants = null, createLocalizationSettings = null, localizationData = null, createSessionContext = null, transportSession = null, createStdLogging = null, createErrorLogging = null, createLocalizationLookup = null }) {
   if (!provider || typeof provider.ready !== "function") throw new TypeError("An installed runtime provider is required.");
   if (!clock || typeof clock.getWallclockTimeNow !== "function") throw new TypeError("The client's actual native wallclock is required.");
   if (!logging?.module || !preferences?.handler || typeof constants !== "function") throw new TypeError("Real logmodule, preference owner and installed constants are required.");
@@ -43,6 +44,32 @@ async function createClientStaticService({ provider, clock, logging, preferences
   let stdLogging = null, pendingStdLogging = null;
   let errorLogging = null, pendingErrorLogging = null;
   let lookup = null, pendingLookup = null;
+  let fullLoad = null, pendingFullLoad = null;
+  function prepareFullLoad() {
+    if (fullLoad !== null) return Promise.resolve(fullLoad);
+    if (pendingFullLoad !== null) return pendingFullLoad;
+    if (!taskletTimer || !builtData || typeof loadTailConstants !== "function") throw new Error("Actual native full static Load inputs are not configured.");
+    // Attachment mutates existing native owners. Keep failure/prefix sticky;
+    // never recreate their classes, indexes or caches to hide a partial attempt.
+    pendingFullLoad = Promise.all([preparePhases(), prepareLocalizationLookup(), builtData.table("groupsOrdered"), builtData.table("categoriesOrdered"), loadTailConstants()])
+      .then(([phases, localization, groups, categories, constants]) => {
+        const names = ["categoryCharge", "attributeFactionID", "groupControlBunker", "categoryModule", "categoryStructureModule", "categoryStarbase"];
+        if (!constants || names.some(name => !Number.isSafeInteger(constants[name]))) throw new TypeError("Installed static Load tail constants are unavailable.");
+        localization.assertCurrent();
+        const dictionary = preferences.handler.getAttr("__dict__").getAttr("__class__").call();
+        for (const name of names) dictionary.setItem(Buffer.from(name), values.int(constants[name]));
+        const module = values.global("_attach_static_load").call(types, phases.data, phases.evetypes, groups, categories, localization.module, taskletTimer.module, dictionary);
+        fullLoad = Object.freeze({
+          module, phases, localization, groups, categories, cfg: module.getAttr("cfg"),
+          identity: Object.freeze({ groups: builtData.identity("groupsOrdered"), categories: builtData.identity("categoriesOrdered") }),
+          // Original Load returns None. Only a normal return establishes this
+          // invocation completed; no Run/monitor/IM readiness is inferred.
+          load(instance) { localization.assertCurrent(); return module.getAttr("load").call(instance); },
+        });
+        return fullLoad;
+      });
+    return pendingFullLoad;
+  }
   function prepareLocalizationLookup() {
     if (lookup !== null) return Promise.resolve(lookup);
     if (pendingLookup !== null) return pendingLookup;
@@ -169,7 +196,7 @@ async function createClientStaticService({ provider, clock, logging, preferences
     reading.then(forget, forget); return reading;
   }
   return Object.freeze({
-    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging, prepareLocalizationLookup,
+    types, clock, logging, preferences, taskletTimer, builtData, identity: runtime.identity, prepareAttributes, preparePhases, prepareLocalizationSettings, prepareLocalizationData, prepareSessionContext, prepareStdLogging, prepareErrorLogging, prepareLocalizationLookup, prepareFullLoad,
     create: () => Client.call(),
     // Allocation is explicit so a failed original __init__ leaves inspectable
     // native fields. It is never presented as an initialized/ready service.

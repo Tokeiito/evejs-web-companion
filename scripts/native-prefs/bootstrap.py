@@ -1101,3 +1101,120 @@ def _attach_localization_lookup(settings_owner, data, standard_logging, logmodul
         return call
     result.entries = {name: entry(name) for name in ('Get', 'GetByMessageID', 'GetByLabel', 'GetImportantByMessageID', 'GetImportantByLabel')}
     return result
+
+
+def _attach_static_load(service_types, data, evetypes, raw_groups, raw_categories, lookup, timer_module, constant_values):
+    # Extend the SAME class/data/type/cache owners. Full original Load is
+    # available separately from Run, weak monitors and ServiceManager readiness.
+    import types, __builtin__, dis, re
+    from collections import defaultdict
+    from caching.memoize import Memoize
+
+    def module_code(name, suffix):
+        prefix = name.rpartition('.')[0].replace('.', '/')
+        code = zipimport.zipimporter(_archive + ('/' + prefix if prefix else '')).get_code(name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith(suffix):
+            raise ImportError('Not the installed static Load dependency: ' + name)
+        return code
+
+    def definition(code, name):
+        found = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(found) != 1:
+            raise ImportError('Ambiguous installed static Load definition: ' + name)
+        return found[0]
+
+    def instructions(code):
+        rows, cursor = [], 0
+        while cursor < len(code.co_code):
+            op = ord(code.co_code[cursor])
+            cursor += 1
+            arg = None
+            if op >= dis.HAVE_ARGUMENT:
+                arg = ord(code.co_code[cursor]) | ord(code.co_code[cursor + 1]) << 8
+                cursor += 2
+            if op == dis.EXTENDED_ARG:
+                raise ImportError('Unsupported static Load literal instruction')
+            rows.append((dis.opname[op], arg))
+        return rows
+
+    base = service_types.BaseDogmaStaticSvc
+    namespace = base.__dict__['__init__'].func_globals
+    if namespace['dogma_data'] is not data or namespace['evetypes'] is not evetypes:
+        raise ValueError('Static Load must retain the same phase/type/data owners')
+    lookup.context.assert_entry()
+    if lookup.policy.markupZonesInPython:
+        raise RuntimeError('Static localization needs its real telemetry zone producer')
+    const = namespace['const']
+    for name, value in constant_values.iteritems():
+        setattr(const, name, value)
+    types_data = evetypes.data
+    loader = types_data.Types.__bases__[0]
+    source = module_code('evetypes.data', '/packages/evetypes/data.py')
+    for name, extension, raw in (('Groups', 'groupsLoader', raw_groups), ('Categories', 'categoriesLoader', raw_categories)):
+        types_data.__dict__[extension] = sys.modules[extension]
+        cls = type(name, (loader,), types.FunctionType(definition(source, name), types_data.__dict__)())
+        cls.__binary__ = raw
+        setattr(types_data, name, cls)
+        setattr(evetypes, name, cls)
+    type_globals = evetypes.__dict__
+    type_globals['defaultdict'] = defaultdict
+    source = module_code('evetypes', '/packages/evetypes/__init__.py')
+    for name in ('GroupNotFoundException', 'CategoryNotFoundException', 'GroupAttributeNotFoundException', 'CategoryAttributeNotFoundException'):
+        type_globals[name] = type(name, (Exception,), types.FunctionType(definition(source, name), type_globals)())
+    localization = types.ModuleType('companion.original_localization_api')
+    for name in ('GetByMessageID', 'GetImportantByMessageID', 'CleanImportantMarkup'):
+        setattr(localization, name, getattr(lookup.instance, name))
+    owned_prefs = types.ModuleType('eveprefs')
+    owned_prefs.boot, owned_prefs.prefs = lookup.settings.boot, lookup.settings.preferences
+    # Use the actual per-client standard logging module, never a shared root.
+    bindings = {'logging': lookup.langutils.comfylang.logging,
+                'eveprefs': owned_prefs, 'localization': localization}
+    localized = types.ModuleType('evetypes.localizationUtils')
+    localized.__dict__.update({'__builtins__': __builtin__.__dict__, '__package__': '', '_CLIENT_IMPORT_BINDINGS': bindings})
+    types.FunctionType(module_code('evetypes.localizationUtils', '/packages/evetypes/localizationUtils.py'), localized.__dict__)()
+    for name in ('GetLocalizedGroupName', 'GetLocalizedCategoryName'):
+        type_globals[name] = getattr(localized, name)
+    for name in ('GetGroups', 'GetCategories', 'GetGroup', 'GetCategory', '_GetAttributeForGroup', '_GetAttributeForCategory',
+                 'GetGroupID', 'GetCategoryID', 'GetCategoryIDByGroup', 'GetGroupNameIDByGroup',
+                 'GetGroupNameByGroup', 'GetCategoryNameByCategory', 'GetCategoryNameIDByCategory',
+                 '_GetTypeIDsByGroupID', 'GetTypeIDsByGroup', '_GetGroupIDsByCategoryID', 'GetGroupIDsByCategory'):
+        defaults = (None, True) if name in ('GetGroupNameByGroup', 'GetCategoryNameByCategory') else None
+        type_globals[name] = types.FunctionType(definition(source, name), type_globals, name, defaults)
+    source = module_code('dogma.data', '/packages/dogma/data.py')
+    rows = instructions(source)
+    stores = [i for i, (op, arg) in enumerate(rows) if op == 'STORE_NAME' and source.co_names[arg] == 'charge_group_regex']
+    if len(stores) != 1:
+        raise ImportError('Ambiguous original charge regex')
+    end = stores[0]
+    prefix = rows[end - 4:end]
+    if len(prefix) != 4 or [op for op, arg in prefix] != ['LOAD_NAME', 'LOAD_ATTR', 'LOAD_CONST', 'CALL_FUNCTION'] or source.co_names[prefix[0][1]] != 're' or source.co_names[prefix[1][1]] != 'compile' or prefix[3][1] != 1:
+        raise ImportError('Charge regex is not the original closed compile expression')
+    data.charge_group_regex = re.compile(source.co_consts[prefix[2][1]])
+    for name in ('get_charge_group_attributes', 'get_charge_group_attribute_ids'):
+        setattr(data, name, Memoize(types.FunctionType(definition(source, name), data.__dict__)))
+    cfg_code = definition(module_code('eve.common.script.sys.eveCfg', '/eve/common/script/sys/eveCfg.py'), 'EveConfig')
+    init = definition(cfg_code, '__init__')
+    rows = instructions(init)
+    stores = [i for i, (op, arg) in enumerate(rows) if op == 'STORE_ATTR' and init.co_names[arg] == 'crystalgroups']
+    if len(stores) != 1 or rows[stores[0] - 2:stores[0]] != [('BUILD_LIST', 0), ('LOAD_FAST', 0)]:
+        raise ImportError('Crystal cache is not the original fresh empty-list field')
+    cfg_globals = {'__name__': 'eve.common.script.sys.eveCfg', '__builtins__': __builtin__.__dict__,
+                   'evetypes': evetypes, 'const': const, 'localization': localization}
+    cfg = type('ClientCrystalConfigFields', (object,), {
+        '__module__': 'companion.crystal_config_fields',
+        'GetCrystalGroups': types.FunctionType(definition(cfg_code, 'GetCrystalGroups'), cfg_globals)})()
+    cfg.crystalgroups = []  # Proven constructor literal above; no constructor slice/full Cfg claim.
+    namespace.update({'cfg': cfg, 'bluepy': timer_module})
+    source = definition(module_code('eve.common.script.dogma.baseDogmaStaticSvc', '/eve/common/script/dogma/baseDogmaStaticSvc.py'), 'BaseDogmaStaticSvc')
+    base.Load = types.FunctionType(definition(source, 'Load'), namespace)
+    result = types.ModuleType('companion.static_load_owner')
+    result.cfg, result.evetypes, result.data, result.localization, result.localized = cfg, evetypes, data, lookup, localized
+    result.timer, result.types = timer_module, service_types
+
+    def load(instance):
+        if not isinstance(instance, service_types.ClientDogmaStaticSvc):
+            raise TypeError('Load instance belongs to another static owner')
+        return instance.Load()
+
+    result.load = load
+    return result
