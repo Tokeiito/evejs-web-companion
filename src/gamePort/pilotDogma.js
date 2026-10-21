@@ -2,6 +2,7 @@
 
 const { marshalDecode } = require("../gameProtocol/marshal");
 const { InventoryItems } = require("./inventoryItems");
+const { createGodmaInventoryRows } = require("./godmaInventoryRows");
 
 // The pilot's own ship as dogma has it: the part of the retail client's
 // `godma` that the ship's panel reads.
@@ -273,6 +274,8 @@ function createPilotDogma({
   onItemChange = () => {},
   // A type's { groupID, categoryID } (evetypes.GetGroupID, GetCategoryID), or null.
   typeFacts = () => null,
+  // ProcessAllInfo's registered numeric inventories; no second binding store.
+  registeredLocations = () => [],
 } = {}) {
   /** itemID -> Map(attributeID -> value). */
   const attributes = new Map();
@@ -286,6 +289,9 @@ function createPilotDogma({
   const identity = new Map();
   /** item key -> { itemID, row }: each held item's GET-INFO row as GetAllInfo, OnGodmaPrimeItem or ItemGetInfo last gave it. */
   const rows = new Map();
+  // Numeric prime metadata is independent of refreshed GET-INFO rows and of
+  // clientDogmaLocation loaded nodes. Notice-driven metadata is a later port.
+  const primeInventory = createGodmaInventoryRows({ rowFields, registeredLocations });
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
   /** item key -> Map(heatID -> { value, at, sources: Set(moduleID) }): the item's HeatAttributes. */
@@ -347,8 +353,9 @@ function createPilotDogma({
   }
 
   /**
-   * godma.ProcessAllInfo (2435), for the ship's items and the pilot's own character: what GetAllInfo answered.
-   * Answers the IDs it now holds.
+   * Synchronous attribute/effect reader for retained recording consumers.
+   * Production priming uses processAllInfo for native admission and bindings;
+   * this raw reader does not model UpdateItem metadata or inventory guards.
    */
   function loadAllInfo(allInfo) {
     const all = fieldsOf(allInfo);
@@ -416,8 +423,8 @@ function createPilotDogma({
         }
         for (const id of keys) {
           const entry = table.get(id);
-          loadRow(entry.id, entry.row);
-          held.push(key(entry.id));
+          const updated = updatePrimeRow(entry.id, entry.row);
+          if (updated !== null) held.push(updated);
         }
       });
     }
@@ -429,6 +436,24 @@ function createPilotDogma({
       characterPrimed = true;
     }
     return finishAllInfo(all, held);
+  }
+
+  /** Numeric UpdateItem1553-1657 within ProcessAllInfo only. The tuple path
+   * remains the existing sublocation reader, not numeric invitems readiness. */
+  function updatePrimeRow(dictionaryID, row) {
+    const fields = fieldsOf(row);
+    if (!fields.has("itemID")) throw new TypeError("Godma GET-INFO row is missing itemID.");
+    const invItem = fields.get("invItem"), inventory = rowFields(invItem);
+    if (Array.isArray(fields.get("itemID")) || Array.isArray(inventory?.itemID)) {
+      loadRow(fields.get("itemID") ?? dictionaryID, row);
+      return key(fields.get("itemID") ?? dictionaryID);
+    }
+    const updated = primeInventory.update(invItem);
+    if (!updated.accepted) return primeInventory.has(updated.itemID) ? updated.itemID : null;
+    const id = updated.itemID;
+    identity.set(id, { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
+    if (updated.refresh) loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true });
+    return id;
   }
 
   /** baseDogmaLocation.SetWeaponBanks: a ship's banks, replacing what was held. {masterID: [slaveID, ...]}, or nothing. */
@@ -475,13 +500,22 @@ function createPilotDogma({
     for (const [heatID, state] of heat.get(shipID) ?? []) if (shipID === id || state.sources.has(id)) updateHeat(shipID, heatID, at);
   }
 
-  /** godma.UpdateItem: one item's row, as GetAllInfo lists it and as OnGodmaPrimeItem sends it. */
-  function loadRow(itemID, row) {
+  /** Existing attribute/effect reader. ProcessAllInfo performs numeric UpdateItem
+   * admission first; legacy notice readers have their own narrower lifetime. */
+  function loadRow(itemID, row, { mergeAttributes = false, nativeAttributes = false } = {}) {
     rows.set(key(itemID), { itemID, row });
     const fields = fieldsOf(row);
-    const values = new Map();
+    const values = new Map(mergeAttributes ? attributes.get(key(itemID)) ?? [] : []);
     const given = fields.get("attributes");
-    for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) values.set(number(attributeID), number(value));
+    if (nativeAttributes && (!fields.has("time") || !fields.has("wallclockTime") || !given || !Array.isArray(given.entries))) {
+      throw new TypeError("Godma attribute refresh requires time, wallclockTime and an attribute dictionary.");
+    }
+    const wallclock = clock(fields.get("wallclockTime"));
+    for (const [attributeID, value] of given && Array.isArray(given.entries) ? given.entries : []) {
+      const id = number(attributeID), last = lastChange.get(`${key(itemID)}:${id}`);
+      if (nativeAttributes && wallclock && last !== undefined && last > wallclock) continue;
+      values.set(id, number(value));
+    }
     updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
     // HeatAttribute.__init__, for an item that has racks to heat and is not held already: what the row says of
     // each, no more than its capacity, true from now, with nothing coming in.
@@ -1029,6 +1063,9 @@ function createPilotDogma({
     feed,
     loadAllInfo,
     processAllInfo,
+    // Initial numeric prime metadata only. This is not a general godma.GetItem
+    // or a clientDogmaLocation loaded-node API; notice lifetime is separate.
+    primeInventoryItem: (itemID) => primeInventory.get(itemID),
     multiEvent,
     shipReadings,
     has: (itemID) => attributes.has(key(itemID)),
@@ -1048,7 +1085,10 @@ function createPilotDogma({
      * godma's touches. The answer to the priming that follows has the ship's state, in space as docked, and that
      * replaces them (setWeaponBanks); an answer with no state leaves them. Nor the racks' heat, as in clear().
      */
-    purge() {
+    purge({ keepShipID = null } = {}) {
+      // Numeric prime metadata follows the supplied keep list. The older
+      // attribute/effect reader below still retains only character scope.
+      primeInventory.purge([characterID, keepShipID].filter(id => id !== null));
       for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
       const mine = characterID === null ? null : key(characterID);
       const kept = new Set();
@@ -1067,6 +1107,7 @@ function createPilotDogma({
       effects.clear();
       identity.clear();
       rows.clear();
+      primeInventory.clear();
       banks.clear();
       characterPrimed = false;
     },

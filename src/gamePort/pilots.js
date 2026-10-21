@@ -1756,6 +1756,7 @@ function createGamePortPilots({
           entry.inventory.itemChanged(row, change);
         },
         typeFacts,
+        registeredLocations: () => entry.godmaLocations.keys(),
       }),
       dogmaLoaded: null,
       /** Only godma ProcessAllInfo's structure/ship/character guards; not the full native invByID/starbase registry.
@@ -4646,7 +4647,7 @@ function createGamePortPilots({
       const allInfo = await monikerCall(entry, "dogmaIM", "GetAllInfo", asking);
       if (!current()) return false;
       // What godma let go before it asked: every inventory but the character's.
-      entry.dogma.purge();
+      entry.dogma.purge({ keepShipID: place.shipID });
       // This follows the existing managed purge scope only. Native invByID also
       // has solar-system/starbase lifetimes which are not modeled by this registry.
       for (const itemID of entry.godmaLocations.keys()) if (itemID !== entry.characterID) entry.godmaLocations.delete(itemID);
