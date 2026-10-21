@@ -1,13 +1,14 @@
 "use strict";
 
 const { ZeroDivisionError, OverflowError } = require("./clientDogmaErrors");
+const { divideAttributeDoubles, multiplyAttributeDoubles } = require("./clientDogmaArithmetic");
 
 // StateManager.GetChargeValue2037-2050, original Python27 evidence:
 // cdxchargearithmeticagent1 (24 identities). Numeric cache only, not the legacy
 // projection, loaded dogma nodes or GetAttribute's diagnostic wrapper.
 const REAL_KIND = Object.freeze({ kind: "real", source: "godma-charge-arithmetic" });
 const INTEGER_KIND = Object.freeze({ kind: "integer", source: "godma-charge-arithmetic" });
-const ZERO_KIND = Object.freeze({ kind: "integer", source: "godma-charge-zero-capacity" });
+const ZERO_KIND = Object.freeze({ kind: "integer", pythonType: "int", source: "godma-charge-zero-capacity" });
 const record = (value, kind) => Object.freeze({ value, kind });
 
 class NumericProvenanceError extends Error {
@@ -47,8 +48,7 @@ function integerValue(value) {
 
 function realDivision(left, right) {
   const a = doubleValue(left), b = doubleValue(right);
-  if (b === 0) throw new ZeroDivisionError();
-  return record(a / b, REAL_KIND);
+  return record(divideAttributeDoubles(a, b), REAL_KIND);
 }
 
 function divideRecords(left, right) {
@@ -77,7 +77,7 @@ function floatDivideRecords(left, right) {
 function scaleRealRecords(left, right) {
   const a = numeric(left), b = numeric(right);
   if (a.kind !== "real" && b.kind !== "real") throw new NumericProvenanceError();
-  return record(doubleValue(a.value) * doubleValue(b.value), REAL_KIND);
+  return record(multiplyAttributeDoubles(doubleValue(a.value), doubleValue(b.value)), REAL_KIND);
 }
 
 function tick(value) {
