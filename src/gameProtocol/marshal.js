@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 865c11737, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js 73fe0d943, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -914,23 +914,27 @@ function encodePackedNumericValue(type, value) {
       buf.writeBigInt64LE(BigInt(scaled), 0);
       return buf;
     }
-    case DBTYPE.I8:
+    case DBTYPE.I8: {
+      const buf = Buffer.alloc(8);
+      buf.writeBigInt64LE(normalizePackedBigInt(value, 0n), 0);
+      return buf;
+    }
     case DBTYPE.UI8:
     case DBTYPE.FILETIME: {
       const buf = Buffer.alloc(8);
       const bigValue = normalizePackedBigInt(value, 0n);
-      buf.writeBigInt64LE(bigValue, 0);
+      // Installed DBRow::Set (blue.dll.original 0x1802fc460) and CCP
+      // PyRowSet.cpp:1214-1220 use the UNSIGNED 64-bit converter here.
+      buf.writeBigUInt64LE(bigValue, 0);
       return buf;
     }
     case DBTYPE.I4:
     case DBTYPE.UI4: {
       const buf = Buffer.alloc(4);
       const intValue = Math.trunc(normalizePackedNumber(value, 0));
-      if (type === DBTYPE.UI4) {
-        buf.writeUInt32LE(intValue >>> 0, 0);
-      } else {
-        buf.writeInt32LE(intValue, 0);
-      }
+      // Native DBRow::Set sends BOTH types through PyInt_AsLong: Windows
+      // signed32 range, with negative values preserving their stored bits.
+      buf.writeInt32LE(intValue, 0);
       return buf;
     }
     case DBTYPE.R4: {
@@ -1100,13 +1104,16 @@ function decodePackedFixedValue(type, buffer, offset) {
       // CCP PyRowSet.cpp:1102-1103 returns a real currency amount.
       return Number(buffer.readBigInt64LE(offset)) / 10000.0;
     case DBTYPE.I8:
+      return coerceDecodedPackedInteger(buffer.readBigInt64LE(offset));
     case DBTYPE.UI8:
     case DBTYPE.FILETIME:
-      return coerceDecodedPackedInteger(buffer.readBigInt64LE(offset));
+      // Installed getter 0x1802fc010 selects PyLong_FromUnsignedLongLong.
+      return coerceDecodedPackedInteger(buffer.readBigUInt64LE(offset));
     case DBTYPE.I4:
-      return buffer.readInt32LE(offset);
     case DBTYPE.UI4:
-      return buffer.readUInt32LE(offset);
+      // Both reach PyInt_FromLong in the installed Windows client. Its
+      // 32-bit C long interprets the high bit as signed, including UI4.
+      return buffer.readInt32LE(offset);
     case DBTYPE.R4:
       return buffer.readFloatLE(offset);
     case DBTYPE.R8:
