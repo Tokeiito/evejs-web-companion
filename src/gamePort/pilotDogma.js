@@ -1548,6 +1548,8 @@ function createPilotDogma({
     loadAllInfo,
     processAllInfo,
     initializeNativeFreshness,
+    captureInventorySessionCheck: names => createNativeClientGodmaHeaders
+      ? initializeNativeGodmaHeaders().then(owner => owner.prepareInventorySessionChecks()).then(checks => checks.capture(names)) : null,
     processSessionFreshness(changes, charid) {
       if (!charid || !["stationid", "solarsystemid", "shipid", "charid", "structureid"].some(name => Object.hasOwn(changes, name))) return;
       return withFreshness(scope => scope ? scope.replace() : lastChange.clear());

@@ -2125,6 +2125,40 @@ def _attach_godma_inventory_rows(owner):
     return result
 
 
+def _attach_inventory_session_checks(owner):
+    # Original remote-object policy applied to the actual transport receipt.
+    # This is a check record, NOT a fabricated MachoObjectConnection or native
+    # inventory container. Their constructor/session/RPC graph remains absent.
+    import types
+    existing = getattr(owner, 'inventory_session_checks', None)
+    if existing is not None:
+        return existing
+    code = zipimport.zipimporter(_archive + '/carbon/common/script/net').get_code('carbon.common.script.net.ObjectCallGPCS')
+    if code is None or not code.co_filename.replace('\\', '/').endswith('/carbon/common/script/net/ObjectCallGPCS.py'):
+        raise ImportError('Not the installed remote object session-check source')
+    classes = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == 'MachoObjectConnection']
+    if len(classes) != 1:
+        raise ImportError('Ambiguous installed MachoObjectConnection')
+    methods = [v for v in classes[0].co_consts if type(v) is types.CodeType and v.co_name == 'PerformSessionCheck']
+    if len(methods) != 1:
+        raise ImportError('Ambiguous installed remote session check')
+    godma_globals = type(owner.instance).__dict__['__init__'].func_globals
+    namespace = {'__name__': 'companion.inventory_session_checks', '__builtins__': __builtins__, 'log': godma_globals['log']}
+    perform = types.FunctionType(methods[0], namespace)
+    KeyVal = owner.constants_owner.modules['utillib'].KeyVal
+    result = types.ModuleType(namespace['__name__'])
+
+    def new_policy():
+        return {}
+
+    def receipt(session, policy, object_id):
+        return KeyVal(session=session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id)
+
+    result.new_policy, result.receipt, result.perform = new_policy, receipt, perform
+    owner.inventory_session_checks = result
+    return result
+
+
 def _attach_godma_effect_rows(owner):
     # Named source port of RefreshItemEffects1647-1682 and the cached-row
     # prefix of OnGodmaShipEffect1448-1459. The original service scatter,

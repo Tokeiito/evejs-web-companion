@@ -1788,6 +1788,7 @@ function createGamePortPilots({
       tradeReferences: new WeakMap(),
       /** The two inventory managers invCache keeps, by which: the "N=..." of each. */
       inventoryManagers: new Map(),
+      inventoryManagerVersion: 0,
       /** The monikers the client keeps for where the pilot is, by service: the "N=..." each is bound to (monikerCall). */
       monikers: new Map(),
       /** The binds under way, by what is being bound: a Moniker binds once, and a call that finds it binding waits. */
@@ -5223,6 +5224,7 @@ function createGamePortPilots({
 
   /** The pilot moved: what was bound for the old place is the old place's. */
   function forgetLocationObjects(entry) {
+    entry.inventoryManagerVersion++;
     entry.inventoryManagers.clear();
     for (const service of [...entry.monikers.keys()]) {
       // The skill handler is the character's, wherever it is: skillsvc keeps its moniker until it forgets everything.
@@ -5798,8 +5800,21 @@ function createGamePortPilots({
    * A call on invCache's `inventorymgr` (where the pilot is) or `stationInventoryMgr` (its station): each a Moniker it
    * keeps. The station's is only asked of a pilot docked in one, for whom the two are bound by the same parameters.
    */
-  const inventoryCall = (entry, which, method, args) =>
-    keptCall(entry, entry.inventoryManagers, which, "invbroker", () => locationBindParams(entry), method, args, null);
+  const inventoryCall = (entry, which, method, args) => {
+    const version = entry.inventoryManagerVersion;
+    return keptCall(entry, entry.inventoryManagers, which, "invbroker", () => locationBindParams(entry), method, args, null, () => {
+      if (entry.ended || entry.inventoryManagerVersion !== version) throw fail("SESSION_REQUEST_RETIRED", "This inventory manager binding belongs to the pilot's previous location.");
+    });
+  };
+
+  function checkedInventoryReceipt(entry, answer, policy) {
+    const objectID = answeredObject(entry.session, "invbroker", answer);
+    if (objectID && policy) {
+      const scope = policy.receipt(objectID);
+      entry.session.setObjectSessionCheck(objectID, scope.check);
+    }
+    return objectID;
+  }
 
   /**
    * Make the bind the BFF asked the gateway for, as the retail client makes
@@ -5814,6 +5829,7 @@ function createGamePortPilots({
       return entry.space.remote();
     }
     if (service === "invbroker" && method === "GetInventory") {
+      const policy = await entry.dogma.captureInventorySessionCheck(attribute(entry, "structureid") !== null ? ["locationid"] : ["stationid"]);
       // invCache.GetInventory(const.containerHangar): the station's hangar from the station's manager.
       //
       // Docked in a structure the hangars are the structure's own inventory (invControllers.StructureItemHangar and
@@ -5827,13 +5843,14 @@ function createGamePortPilots({
       if (asked !== (structureID ?? attribute(entry, "stationid"))) {
         throw fail("CALL_REFUSED", "The pilot is not docked there.");
       }
-      if (structureID !== null) return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]));
-      return answeredObject(session, "invbroker", await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]));
+      if (structureID !== null) return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]), policy);
+      return checkedInventoryReceipt(entry, await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]), policy);
     }
     if (service === "invbroker" && method === "GetInventoryFromId") {
+      const policy = await entry.dogma.captureInventorySessionCheck(["locationid"]);
       // invCache.GetInventoryFromId(itemid, passive=0): both positional.
       const passive = kwargs && kwargs.passive !== undefined ? kwargs.passive : args[1] ?? 0;
-      return answeredObject(session, "invbroker", await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]));
+      return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]), policy);
     }
     // A service's own method that answers with a bound object:
     // sm.RemoteSvc('scanMgr').GetSystemScanMgr(), sm.RemoteSvc('fleetObjectHandler').CreateFleet().
