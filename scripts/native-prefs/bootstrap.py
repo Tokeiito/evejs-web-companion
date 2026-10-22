@@ -2373,7 +2373,96 @@ def _attach_inventory_session_checks(owner, context):
     result.all_monikers, result.manager_helpers = moniker_namespace['allMonikers'], eve_namespace
     result.manager, result.check_manager = manager, check_manager
     result.resolve_manager, result.publish_manager = resolve_manager, publish_manager
+    result.containers = _attach_inventory_container_types(owner, result)
     owner.inventory_session_checks = result
+    return result
+
+
+def _attach_inventory_container_types(owner, checks):
+    # Genuine constructor/wrapper field phase on the SAME existing broker.
+    # Listing/item-change storage, native invByID admission and synchronous
+    # password/RPC/service continuations remain separate capabilities.
+    import types
+    existing = getattr(owner, 'inventory_container_types', None)
+    if existing is not None:
+        if existing.error is not None:
+            raise existing.error[0], existing.error[1], existing.error[2]
+        if not existing.complete or existing.checks is not checks:
+            raise ImportError('Original inventory container preparation is incomplete')
+        return existing
+    result = types.ModuleType('companion.inventory_container_types')
+    result.complete, result.error, result.checks = False, None, checks
+    owner.inventory_container_types = result
+    try:
+        code = zipimport.zipimporter(_archive + '/eve/client/script/environment').get_code('eve.client.script.environment.invCache')
+        if code is None or not code.co_filename.replace('\\', '/').endswith('/eve/client/script/environment/invCache.py'):
+            raise ImportError('Not the installed inventory container source')
+
+        def definition(name):
+            matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+            if len(matches) != 1:
+                raise ImportError('Ambiguous original inventory container definition: ' + name)
+            return matches[0]
+
+        graph = owner.constants_owner
+        namespace = {'__name__': 'eve.client.script.environment.invCache', '__builtins__': __builtins__,
+                     'const': graph.appConst, 'session': checks.context.session, 'sys': sys,
+                     'Memoize': graph.load('caching.memoize').Memoize, 'Moniker': checks.Moniker,
+                     'UserError': owner.rowset_types.error_log.UserError}
+        # Original Memoize(1) creates ONE shared native 60-second closure for
+        # this class, using real stdlib time/numbers, never a per-guard cache.
+        for name in ('PasswordHandlerCallWrapper', 'PasswordHandlerObjectWrapper', 'FastInvCallWrapper', 'invCacheContainer'):
+            namespace[name] = types.ClassType(name, (), types.FunctionType(definition(name), namespace)())
+            setattr(result, name, namespace[name])
+        broker = owner.dependencies.GetService('invCache')
+        # Selected original Initialize108 dictionary field only. Do not Run or
+        # Initialize the broker again: that would reset its actual header and
+        # managers and require an unprepared native semaphore/service graph.
+        if 'inventories' not in broker.__dict__:
+            broker.inventories = {}
+        result.broker, result.namespace = broker, namespace
+
+        def key(which, item):
+            if which == 'hangar':
+                return (graph.appConst.containerHangar, None)
+            if which == 'structure':
+                return (checks.context.fields.structureid, None)
+            if which == 'item':
+                return (item, None)
+            raise ValueError('Unknown original container key domain')
+
+        def construct(remote, key):
+            if not isinstance(remote, checks.MachoObjectConnection):
+                raise TypeError('An actual original remote inventory connection is required')
+            return namespace['invCacheContainer'](remote, key, broker)
+
+        def publish(guard):
+            if guard.broker is not broker:
+                raise ValueError('Container must retain its actual broker')
+            broker.inventories[guard.key] = guard
+
+        def unpublish(guard, detach=False):
+            if broker.inventories.get(guard.key) is guard:
+                if detach:
+                    guard.moniker = None  # Original InvalidateLocationCache594-605.
+                del broker.inventories[guard.key]
+                return True
+            return False
+
+        def invalidate_container_fields():
+            # Original InvalidateCache575-577 container field phase: detach
+            # retained guards before replacing the dictionary. Single drops
+            # above deliberately retain the guard's remote wrapper.
+            for guard in broker.inventories.itervalues():
+                guard.moniker = None
+            broker.inventories = {}
+
+        result.key, result.construct, result.publish = key, construct, publish
+        result.unpublish, result.invalidate_container_fields = unpublish, invalidate_container_fields
+        result.complete = True
+    except BaseException:
+        result.error = sys.exc_info()
+        raise
     return result
 
 

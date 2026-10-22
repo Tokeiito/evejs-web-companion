@@ -97,6 +97,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
         await prepareDefinitions();
         assertCurrent();
         const checks = runtime.values.global("_attach_inventory_session_checks").call(module, context.module);
+        inventoryHeader.attachContainerFields(checks.getAttr("containers"));
         return createClientInventorySessionChecks({ runtime, module: checks, context, assertCurrent });
       })();
     },

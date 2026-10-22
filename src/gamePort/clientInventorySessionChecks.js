@@ -2,16 +2,24 @@
 
 const { nativeSessionScalar } = require("./clientSessionContext");
 const { projectNativeNodeAddress } = require("./clientMachoAddress");
-const { getDecodedNumberKind } = require("../gameProtocol/marshal");
-const { long } = require("./clientMarshal");
+const { getDecodedNumberKind, marshalDecode } = require("../gameProtocol/marshal");
+const { long, encodeClient } = require("./clientMarshal");
 
 /** Original native inventory connections, owned by actual receipt holders.
  * The session registry is weak; neither it nor a per-N callback roots them.
- * Native containers and the original synchronous RPC scheduler remain separate.
+ * Native container constructor fields are real; listing/notice storage and the
+ * original synchronous RPC scheduler remain separate capabilities.
  */
 function createClientInventorySessionChecks({ runtime, module, context, assertCurrent }) {
   const receipts = new WeakMap(), publicValues = new WeakMap(), publicFailures = new WeakMap(), converting = new WeakSet();
   function current() { assertCurrent(); context.assertCurrent(); }
+  const containers = module.getAttr("containers");
+  function requestOperand(value) {
+    // Use the SAME actual outgoing marshaller's scalar class. No normalized
+    // JS integrality guess or type inferred from a server object's N= string.
+    const tuple = marshalDecode(encodeClient([value]), { preserveNumberKinds: true });
+    return nativeSessionScalar(runtime, { value: tuple[0], kind: getDecodedNumberKind(tuple, 0) });
+  }
   function receipt(objectID, reference) {
     current();
     if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual returned inventory object is required.");
@@ -104,13 +112,20 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
       }
       return Object.freeze({
         policy,
-        receipt(objectID, reference) {
+        key(which, item = null) {
+          current();
+          return containers.getAttr("key").call(Buffer.from(which), which === "item" ? requestOperand(item) : runtime.values.none());
+        },
+        receipt(objectID, reference, key = null) {
           const record = receipt(objectID, reference);
           record.getAttr("SetSessionCheck").call(policy);
+          const container = key === null ? null : containers.getAttr("construct").call(record, key);
           // The dispatch callback retains this receipt owner, including its
           // actual public-attribute object, rather than only an N= string.
           const scope = {
-            record, reference,
+            record, reference, container,
+            publish() { current(); if (container) containers.getAttr("publish").call(container); },
+            unpublish(detach = false) { return container ? containers.getAttr("unpublish").call(container, detach).truth() : false; },
             check() { current(); return module.getAttr("perform_in_context").call(context.module, scope.record); },
             dispatch() {
               scope.check();

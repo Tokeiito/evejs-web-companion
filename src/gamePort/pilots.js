@@ -1648,6 +1648,10 @@ function createGamePortPilots({
   function end(entry, reason, refusalStatus = 404) {
     if (entry.ended) return;
     entry.ended = true;
+    // invCache.Stop invalidates its guards. Break the actual broker/guard
+    // ownership cycle even when native owners outlive this closed socket.
+    entry.inventory.forget();
+    entry.inventoryManagers.clear();
     entry.corporationMembers.clear();
     entry.corporationApplications.clear();
     // Nobody is left to answer: each question closes unanswered, as its window would with the client.
@@ -5813,11 +5817,11 @@ function createGamePortPilots({
     finally { if (entry.binding.get(key) === binding) entry.binding.delete(key); }
   };
 
-  function checkedInventoryReceipt(entry, answer, policy) {
+  function checkedInventoryReceipt(entry, answer, policy, key) {
     const objectID = answeredObject(entry.session, "invbroker", answer);
     if (objectID && policy) {
-      const scope = policy.receipt(objectID, remoteObjectReference(answer));
-      return Object.freeze({ objectID, dispatch: scope.dispatch });
+      const scope = policy.receipt(objectID, remoteObjectReference(answer), key);
+      return Object.freeze({ objectID, dispatch: scope.dispatch, nativeContainer: scope.container, publish: scope.publish, unpublish: scope.unpublish });
     }
     return objectID;
   }
@@ -5849,14 +5853,19 @@ function createGamePortPilots({
       if (asked !== (structureID ?? attribute(entry, "stationid"))) {
         throw fail("CALL_REFUSED", "The pilot is not docked there.");
       }
-      if (structureID !== null) return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]), policy);
-      return checkedInventoryReceipt(entry, await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]), policy);
+      if (structureID !== null) {
+        const key = policy?.key("structure");
+        return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [structureID, 1]), policy, key);
+      }
+      const key = policy?.key("hangar");
+      return checkedInventoryReceipt(entry, await inventoryCall(entry, "station", "GetInventory", [CONTAINER_HANGAR, null]), policy, key);
     }
     if (service === "invbroker" && method === "GetInventoryFromId") {
       const policy = await entry.dogma.captureInventorySessionCheck(["locationid"]);
       // invCache.GetInventoryFromId(itemid, passive=0): both positional.
       const passive = kwargs && kwargs.passive !== undefined ? kwargs.passive : args[1] ?? 0;
-      return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [argumentsToWire(args[0]), passive]), policy);
+      const item = argumentsToWire(args[0]), key = policy?.key("item", item);
+      return checkedInventoryReceipt(entry, await inventoryCall(entry, "location", "GetInventoryFromId", [item, passive]), policy, key);
     }
     // A service's own method that answers with a bound object:
     // sm.RemoteSvc('scanMgr').GetSystemScanMgr(), sm.RemoteSvc('fleetObjectHandler').CreateFleet().
@@ -5877,8 +5886,8 @@ function createGamePortPilots({
     }
     ledger.note("invbroker", method, BOUND_AS_THE_CLIENT_BINDS);
     const making = run(entry, "invbroker", method, () => bindRetail(entry, "invbroker", method, args, kwargs));
-    if (container !== null) entry.inventory.binding(container, making);
-    const objectID = await making;
+    const publication = container === null ? making : entry.inventory.binding(container, making);
+    const objectID = await publication;
     if (!objectID) throw fail("BOUND_NO_OBJECT", `invbroker.${method} did not return a bound object.`);
     return objectID;
   }

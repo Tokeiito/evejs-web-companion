@@ -49,8 +49,20 @@ async function createClientInventoryHeader({ provider, staticService, getItemDes
     },
   });
   let rows = null;
+  let containerFields = null;
   return Object.freeze({
     instance, descriptors, staticService, context,
+    attachContainerFields(fields) {
+      assertCurrent();
+      if (fields.getAttr("broker") !== instance || !fields.getAttr("complete").truth()) throw new TypeError("Original container fields require this same complete broker owner.");
+      if (containerFields && containerFields !== fields) throw new TypeError("The inventory broker already has another container field owner.");
+      containerFields = fields;
+    },
+    invalidateContainerFields() {
+      // Local teardown remains valid after transport retirement. It neither
+      // demands RPC nor recreates an owner/header on a closed session.
+      containerFields?.getAttr("invalidate_container_fields").call();
+    },
     prepareRows() {
       assertCurrent();
       // One capability on this existing owner, using its SAME descriptor

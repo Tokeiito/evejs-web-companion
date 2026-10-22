@@ -32,6 +32,9 @@ const { InventoryItems } = require("./inventoryItems");
 // List scans that table, not insertion order. The input is each row ingress
 // sequence: a remote DBRow set's allocator-dependent iteration is a separate
 // boundary (CCP PyRowSet.cpp hashes object pointers), not an item-ID sort.
+// Native guards now own their genuine constructor/wrapper fields on the same
+// broker. This managed items/listed storage remains the active authority until
+// the coordinated native listing/notice port; native invByID is not populated.
 
 /** The columns of an inventory row by their index in it, as a change is given (const.ixItemID ... ixCustomInfo). */
 const COLUMN_BY_IX = ["itemID", "typeID", "ownerID", "locationID", "flagID", "quantity", "groupID", "categoryID", "customInfo"];
@@ -107,11 +110,18 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
   /** A container bound: held from now on, by its key. */
   const hold = (key, objectID) => {
     const [location, owner] = key.split("|");
+    // The original native constructor has completed; only the current cache
+    // generation publishes its guard on this SAME broker's inventories field.
+    objectID?.publish?.();
     if (!containers.has(key)) {
       containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new InventoryItems(), listed: new Set(), work: Promise.resolve() });
     } else {
       containers.get(key).objectID = objectID;
     }
+  };
+  const drop = (key, detach = false) => {
+    containers.get(key)?.objectID?.unpublish?.(detach);
+    return containers.delete(key);
   };
 
   /** An item's fields, its stack size as the client's row has it (a singleton is one). */
@@ -290,18 +300,18 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
      */
     binding(key, making) {
       const generation = forgotten;
-      const tracked = Promise.resolve(making).then(
-        (objectID) => {
-          if (objectID && generation === forgotten) hold(key, objectID);
-          return objectID || null;
-        },
-        () => null,
-      );
+      const published = Promise.resolve(making).then((objectID) => {
+        if (objectID && generation === forgotten) hold(key, objectID);
+        return objectID || null;
+      });
+      // Publication errors belong to the initiating GetInventory call. Other
+      // waiters observe a failed bind as a miss and may try for themselves.
+      const tracked = published.catch(() => null);
       binding.set(key, tracked);
       tracked.then(() => {
         if (binding.get(key) === tracked) binding.delete(key);
       });
-      return tracked;
+      return published;
     },
     /**
      * invCacheContainer.List(flag): the flag's items, asked for (`ask()`) where the flag has not been listed, and
@@ -361,7 +371,7 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
       if ((is !== was || change.has(IX.FLAG)) && containers.has(is)) processItemChange(containers.get(is), row, item, old, change, s);
       const itself = containerKey(item.itemID, null);
       if (containers.has(itself)) {
-        if (old.ownerID === s.charid && s.charid !== item.ownerID) containers.delete(itself);
+        if (old.ownerID === s.charid && s.charid !== item.ownerID) drop(itself);
         // Original OnItemChange295-300 replaces public .item, independently of _item/_typeID.
         // A cold notice must not suppress a later lazy typeID's GetSelfInvItem.
         else containers.get(itself).ownItem = row;
@@ -369,15 +379,16 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
     },
     /** One container let go (DoBallRemove; a ship left in space). */
     drop(key) {
-      containers.delete(key);
+      drop(key);
     },
     /**
      * InvalidateLocationCache596-605 removes one published guard. A pending-only
      * bind is absent to the original client and may still publish afterwards.
-     * Retained Python guard objects are not exposed by this cache API.
+     * A published native guard loses its remote wrapper before removal, unlike
+     * the delete-only drops used for balls and ownership/corporation changes.
      */
     invalidateLocation(key) {
-      return containers.delete(key);
+      return drop(key, true);
     },
     /**
      * invCache.InvalidateCorpCache at a change of the pilot's corporation roles, docked: the containers that are the
@@ -386,11 +397,12 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
     dropOwnedBy(ownerID) {
       for (const [key, container] of containers) {
         const own = fieldsOf(ownRowOf(container));
-        if (own && own.ownerID === num(ownerID)) containers.delete(key);
+        if (own && own.ownerID === num(ownerID)) drop(key);
       }
     },
     /** Every container let go (InvalidateCache), and the binds under way not held when they come. */
     forget() {
+      itemHeader?.invalidateContainerFields?.();
       containers.clear();
       binding.clear();
       forgotten += 1;
