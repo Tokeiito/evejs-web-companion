@@ -331,6 +331,12 @@ function createPilotDogma({
   let godmaHeaders = null, pendingGodmaHeaders = null;
   let nativeFreshness = null, pendingNativeFreshness = null;
   let nativeChargeMappings = null, pendingNativeChargeMappings = null;
+  let nativeNumericValues = null, pendingNativeNumericValues = null;
+  function initializeNativeNumericValues() {
+    return pendingNativeNumericValues ??= initializeNativeGodmaHeaders().then(owner => owner.prepareNumericValues()).then(owner => {
+      nativeNumericValues = owner; return owner;
+    });
+  }
   function initializeNativeChargeMappings() {
     return pendingNativeChargeMappings ??= initializeNativeGodmaHeaders().then(owner => owner.prepareChargeMappings()).then(owner => {
       nativeChargeMappings = owner; return owner;
@@ -463,10 +469,17 @@ function createPilotDogma({
   const numericValues = createGodmaNumericValues({
     fieldsOf, number, clock, now, chargeValue, chargedPairs: CHARGED, lastChange, isRelevant,
     numberKind: getDecodedNumberKind,
+    nativeStore: createNativeClientGodmaHeaders ? {
+      get: () => nativeNumericValues,
+      capture: () => {
+        if (!nativeFreshness) throw new Error("Original numeric storage requires a prepared manager capture.");
+        return nativeFreshness.captureWarm();
+      },
+    } : null,
     ...(nativeAttributeData ? {
       attributeKey: id => nativeAttributeData.name(id),
-      readAttribute: (itemID, attributeID) => nativeAttributeRecord(itemID, attributeID).value,
-      readAttributeRecord: (itemID, name) => nativeAttributeRecord(itemID, nativeAttributeData.definitionByName(name).attributeID),
+      readAttribute: (itemID, attributeID, scope) => nativeAttributeRecord(itemID, attributeID, undefined, scope).value,
+      readAttributeRecord: (itemID, name, scope) => nativeAttributeRecord(itemID, nativeAttributeData.definitionByName(name).attributeID, undefined, scope),
       evaluateCharge: evaluateGodmaCharge,
       floatDivide: floatDivideRecords,
       scaleReal: scaleRealRecords,
@@ -487,6 +500,7 @@ function createPilotDogma({
       const pending = [];
       if (nativeAttributeData && !nativeAttributeData.isReady()) pending.push(nativeAttributeData.ready());
       if (createNativeClientGodmaHeaders && !nativeChargeMappings) pending.push(initializeNativeChargeMappings());
+      if (createNativeClientGodmaHeaders && !nativeNumericValues) pending.push(initializeNativeNumericValues());
       return pending.length ? Promise.all(pending).then(apply) : apply();
     };
     return captured === undefined ? withFreshness(run) : run(captured);
@@ -502,7 +516,7 @@ function createPilotDogma({
   const primeInventory = createGodmaInventoryRows({ rowFields, registeredLocations });
   const nativeAttributeGetter = nativeAttributeData ? createGodmaAttributeGetter({
     data: nativeAttributeData,
-    cacheRecord: (itemID, attributeID, at) => numericValues.record(itemID, attributeID, at),
+    cacheRecord: (itemID, attributeID, at, scope) => numericValues.record(itemID, attributeID, at, scope),
     inventoryItem: itemID => primeInventory.get(itemID),
     typeFacts: typeID => typeFacts(number(typeID)),
     fieldsOf: row => new Map(Object.entries(rowFields(row) ?? {})),
@@ -512,9 +526,10 @@ function createPilotDogma({
     },
     logException: onNumericChargeError,
   }) : null;
-  function nativeAttributeRecord(itemID, attributeID, at) {
+  function nativeAttributeRecord(itemID, attributeID, at, scope) {
     if (!nativeAttributeGetter) throw new GodmaAttributeDataNotReadyError("Native numeric getter requires installed attribute definitions.");
-    return nativeAttributeGetter.record(key(itemID), attributeID, at);
+    const captured = scope ?? nativeFreshness?.captureWarm();
+    return nativeAttributeGetter.record(key(itemID), attributeID, at, captured);
   }
   /** ship key -> Map(masterID -> Set(slaveID)): baseDogmaLocation.slaveModulesByMasterModule. */
   const banks = new Map();
@@ -532,6 +547,11 @@ function createPilotDogma({
   /** godma.GetAttribute. */
   function attribute(itemID, attributeID, at = now()) {
     const id = key(itemID);
+    if (nativeNumericValues && (Number.isSafeInteger(id) || typeof id === "bigint") && numericValues.has(id)) {
+      // Existing HUD/GET-INFO readers are projections of the canonical store,
+      // including original native charge evaluation, never a second simulator.
+      return number(numericValues.value(id, attributeID, at));
+    }
     const recharging = charged.get(id)?.get(attributeID);
     if (recharging) return chargeValue(...recharging, at);
     return attributes.get(id)?.get(attributeID) ?? null;
@@ -551,10 +571,11 @@ function createPilotDogma({
   }
 
   /** godma.UpdateAttribute: an item's attributes, all at once, true at `time`. */
-  function updateAttributes(itemID, values, time) {
+  function updateAttributes(itemID, values, time, freshness = null) {
     const id = key(itemID);
     attributes.set(id, values);
     charged.delete(id);
+    if (nativeNumericValues && (Number.isSafeInteger(id) || typeof id === "bigint") && numericValues.has(id, freshness)) return;
     for (const attributeID of values.keys()) {
       if (!CHARGED.has(attributeID)) continue;
       const [tau, cap] = CHARGED.get(attributeID);
@@ -567,13 +588,14 @@ function createPilotDogma({
    * held of the item. (The client leaves one be where it has taken a later change of it already; godma here is
    * flushed before it is primed, and has taken none.)
    */
-  function refreshAttributes(itemID, info) {
+  function refreshAttributes(itemID, info, freshness = null) {
     const fields = fieldsOf(info);
     const given = fields.get("attributes");
     if (!given || !Array.isArray(given.entries)) return;
     const values = new Map(attributes.get(key(itemID)) ?? []);
-    for (const [attributeID, value] of given.entries) values.set(number(attributeID), number(value));
-    updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+    for (const [attributeID, value] of given.entries) values.set(number(attributeID), number(nativeNumericValues && freshness
+      ? numericValues.scalarRecord(key(itemID), number(attributeID), freshness)?.value : value));
+    updateAttributes(itemID, values, clock(fields.get("time")) ?? now(), freshness);
   }
 
   /**
@@ -604,7 +626,7 @@ function createPilotDogma({
   }
 
   /** Post-ProcessAllInfo state retained by the existing godma attribute/effect reader. */
-  function finishAllInfo(all, held) {
+  function finishAllInfo(all, held, freshness = null) {
     // 2427 to 2430: the brain, charInfo's second, given to the client's dogma location when it is made
     // (clientDogmaIM.GetDogmaLocation: once, so a later priming's is not taken), its version -1
     // (clientDogmaLocation.__init__: `initialBrain = (-1,) + charBrain[1:]`) so that any update the server sends
@@ -612,7 +634,7 @@ function createPilotDogma({
     const charBrain = items(all.get("charInfo"))[1];
     if (brain === null && Array.isArray(charBrain) && charBrain.length >= 4) brain = [-1, ...charBrain.slice(1)];
     // 2446: the character's attributes the ship changes, laid over what is held of the character.
-    if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"));
+    if (characterID !== null) refreshAttributes(characterID, all.get("shipModifiedCharAttribs"), freshness);
     // The ship item the client has is kept when that ship is loaded again; any other was unloaded, and its
     // heat with it. A module that is no longer among the ship's items heats nothing.
     for (const [id, racks] of [...heat]) {
@@ -664,7 +686,13 @@ function createPilotDogma({
       characterPrimed = true;
     }
     freshness?.assertCurrent();
-    return finishAllInfo(all, held);
+    const modified = all.get("shipModifiedCharAttribs");
+    if (freshness && characterID !== null && modified && (modified.type !== "dict" || modified.entries.length)) {
+      await withAttributes((scope, mappings) => numericValues.refresh(characterID, modified, true, scope,
+        { native: scope.character() }, mappings), freshness);
+      freshness.assertCurrent();
+    }
+    return finishAllInfo(all, held, freshness);
   }
 
   /** Numeric UpdateItem1553-1657 within ProcessAllInfo only. The tuple path
@@ -755,9 +783,10 @@ function createPilotDogma({
     for (const pair of given && Array.isArray(given.entries) ? given.entries : []) {
       const [attributeID, value] = pair, id = number(attributeID);
       if (nativeAttributes && !isRelevant(freshness, rawItem, { value: attributeID, kind: getDecodedNumberKind(pair, 0) }, wallclock)) continue;
-      values.set(id, number(value));
+      values.set(id, number(nativeAttributes && nativeNumericValues && !Array.isArray(itemID)
+        ? numericValues.scalarRecord(key(itemID), id, freshness)?.value : value));
     }
-    updateAttributes(itemID, values, clock(fields.get("time")) ?? now());
+    updateAttributes(itemID, values, clock(fields.get("time")) ?? now(), freshness);
     // HeatAttribute.__init__, for an item that has racks to heat and is not held already: what the row says of
     // each, no more than its capacity, true from now, with nothing coming in.
     if (!heat.has(key(itemID)) && [...HEAT.values()].some(({ capacity }) => values.has(capacity))) {
@@ -990,10 +1019,16 @@ function createPilotDogma({
   }
 
   /** godma.ApplyAttributeChange. */
-  function applyAttributeChange(itemID, attributeID, time, newValue) {
+  function applyAttributeChange(itemID, attributeID, time, newValue, freshness = null) {
     const id = key(itemID);
     const values = attributes.get(id);
     if (!values) return false; // "item not found"
+    if (nativeNumericValues && (Number.isSafeInteger(id) || typeof id === "bigint") && numericValues.has(id, freshness)) {
+      const before = values.get(attributeID);
+      const after = number(numericValues.scalarRecord(id, attributeID, freshness)?.value);
+      values.set(attributeID, after);
+      return before !== after;
+    }
     const oldValue = attribute(id, attributeID);
     if (oldValue === newValue) return false; // "Reduntant update"
     values.set(attributeID, newValue);
@@ -1040,12 +1075,16 @@ function createPilotDogma({
     return true;
   }
 
-  function change(each, kind = getDecodedNumberKind(each, 5), freshness = null, mappings = null) {
+  function change(each, kind = getDecodedNumberKind(each, 5), freshness = null, mappings = null, source = each, offset = 0) {
     freshness?.assertCurrent();
     const [, , itemKey, attributeID, time, newValue] = each;
     // Freshness was accepted BEFORE any definition provider could yield.
     const id = key(itemKey), attribute_ = number(attributeID);
-    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, clock(time) ?? now(), newValue, kind, mappings);
+    if (!Array.isArray(itemKey) && primeInventory.has(id)) numericValues.change(id, attribute_, createNativeClientGodmaHeaders ? time : clock(time) ?? now(), newValue, kind, mappings, {
+      item: { value: source[2 + offset], kind: getDecodedNumberKind(source, 2 + offset) },
+      attribute: { value: source[3 + offset], kind: getDecodedNumberKind(source, 3 + offset) },
+      time: { value: source[4 + offset], kind: getDecodedNumberKind(source, 4 + offset) },
+    }, freshness);
     // clientDogmaLocation.OnModuleAttributeChanges: a rack's heat is set to what the server says, as of now
     // (HeatAttribute.SetBaseValue). The client leaves it alone when it is that already, going by the value its
     // gauges last worked out; here that is the heat as of now, which in space is the same to within a gauge's
@@ -1057,7 +1096,7 @@ function createPilotDogma({
     if (HEAT_INPUTS.has(attribute_)) settleHeat(id, now());
     const ofACharge = Array.isArray(itemKey) && attribute_ === ATTRIBUTE.QUANTITY && attributes.has(id);
     const before = ofACharge ? attribute(id, attribute_) : null;
-    const changed = applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue));
+    const changed = applyAttributeChange(id, attribute_, clock(time) ?? now(), number(newValue), freshness);
     if (changed && ofACharge) chargeQuantityChanged(itemKey, id, number(newValue), before);
     return changed;
   }
@@ -1209,7 +1248,7 @@ function createPilotDogma({
       const work = withFreshness(freshness => primeChannel.receive(() => {
         const each = ["OnModuleAttributeChange", ...notification.args];
         if (!acceptChange(each, freshness, notification.args, -1) || !ownsChange(each, freshness, notification.args, -1)) return false;
-        return withAttributes((scope, mappings) => change(each, kind, scope, mappings), freshness);
+        return withAttributes((scope, mappings) => change(each, kind, scope, mappings, notification.args, -1), freshness);
       }));
       if (work && typeof work.then === "function") return work.then(() => true);
       return true;
@@ -1626,7 +1665,7 @@ function createPilotDogma({
       identity.clear();
       rows.clear();
       primeInventory.clear();
-      numericValues.clear();
+      numericValues.clear(freshness);
       numericEffects?.clear();
       banks.clear();
       characterPrimed = false;

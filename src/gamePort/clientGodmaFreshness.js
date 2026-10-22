@@ -15,16 +15,13 @@ function decodedFieldRecord(info, name) {
   return { value: fields?.[name], kind: getDecodedNumberKind(fields, name) };
 }
 
-/** One active authority: the original StateManager.lastAttributeChange.
- * Capture the manager at logical entry, but read its CURRENT dictionary for
- * every operation. Release refuses an old continuation rather than moving it
- * into a replacement manager. Other runtime store families remain separate.
- */
-function createClientGodmaFreshness({ runtime, owner, module, context, assertCurrent }) {
+// Shared numeric ingress conversion. Existing heap references stay unchanged.
+function createGodmaNativeRecordConverter(runtime, tuple) {
   const values = runtime.values;
   function native(record) {
+    if (record.native) return record.native;
     const { value, kind } = record;
-    if (Array.isArray(value)) return module.getAttr("tuple_key").call(...value.map((part, index) => native({ value: part, kind: getDecodedNumberKind(value, index) })));
+    if (Array.isArray(value)) return tuple.call(...value.map((part, index) => native({ value: part, kind: getDecodedNumberKind(value, index) })));
     if (value === null) return values.none();
     if (typeof value === "boolean") return values.bool(value);
     // A retained BigInt is an explicit long; ordinary JS numbers require
@@ -33,8 +30,17 @@ function createClientGodmaFreshness({ runtime, owner, module, context, assertCur
     if (type === "int") return values.int(value);
     if (type === "long") return values.long(typeof value === "bigint" ? value : BigInt(value));
     if (type === "float") return values.float(value);
-    throw new TypeError("Godma freshness requires the original Python numeric class.");
+    throw new TypeError("Godma ingress requires the original Python numeric class.");
   }
+  return native;
+}
+
+/** Capture the original manager at logical entry and read its CURRENT native
+ * freshness dict per operation. Release refuses an old continuation instead
+ * of moving it into a replacement manager.
+ */
+function createClientGodmaFreshness({ runtime, owner, module, context, assertCurrent }) {
+  const native = createGodmaNativeRecordConverter(runtime, module.getAttr("tuple_key"));
   return Object.freeze({
     captureWarm() {
       assertCurrent();
@@ -46,6 +52,7 @@ function createClientGodmaFreshness({ runtime, owner, module, context, assertCur
       return Object.freeze({
         manager,
         assertCurrent: current,
+        character() { current(); return context.session.getAttr("charid"); },
         relevant(item, attribute, wallclock) {
           current();
           return manager.getAttr("_IsAttributeChangeRelevant").call(native(item), native(attribute), native(wallclock)).truth();
@@ -64,4 +71,4 @@ function createClientGodmaFreshness({ runtime, owner, module, context, assertCur
   });
 }
 
-module.exports = { createClientGodmaFreshness, decodedFieldRecord };
+module.exports = { createClientGodmaFreshness, decodedFieldRecord, createGodmaNativeRecordConverter };

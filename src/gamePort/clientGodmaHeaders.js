@@ -3,9 +3,10 @@
 const { createClientGodmaRowsets } = require("./clientGodmaRowsets");
 const { createClientGodmaFreshness } = require("./clientGodmaFreshness");
 const { createClientGodmaChargeMappings } = require("./clientGodmaChargeMappings");
+const { createClientGodmaNumericValues } = require("./clientGodmaNumericValues");
 
 /** Original selected Godma constructor and descriptor properties. The existing
- * pilot dogma owns this capability; its numeric stores remain authoritative.
+ * pilot dogma owns this capability and its prepared canonical numeric stores.
  * JS async demand precedes original native warm access, never a fake sync RPC.
  */
 async function createClientGodmaHeaders({ provider, inventoryHeader }) {
@@ -34,6 +35,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   let typeWrapperPreparation = null;
   let freshnessPreparation = null;
   let chargeMappingPreparation = null;
+  let numericValuePreparation = null;
   function prepareStateManager() {
     assertCurrent();
     return managerPreparation ??= (async () => {
@@ -80,6 +82,15 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
         await prepareStateManagerData();
         assertCurrent();
         return createClientGodmaChargeMappings({ runtime, owner: module, assertCurrent });
+      })();
+    },
+    prepareNumericValues() {
+      assertCurrent();
+      return numericValuePreparation ??= (async () => {
+        await prepareStateManagerData();
+        assertCurrent();
+        const moduleValues = runtime.values.global("_attach_godma_numeric_values").call(module);
+        return createClientGodmaNumericValues({ runtime, owner: module, module: moduleValues, assertCurrent });
       })();
     },
     prepareFreshness() {

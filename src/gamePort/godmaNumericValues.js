@@ -5,7 +5,51 @@ const { decodedFieldRecord } = require("./clientGodmaFreshness");
 // Numeric RefreshItemAttributes1686-1736 and ApplyAttributeChange2526-2581.
 // Cached numeric value/charge state. A native caller supplies GetAttribute for
 // notice comparison; definitions, effect rows, metadata and nodes live outside.
-function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, isRelevant = null, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null, evaluateCharge = null, floatDivide = null, scaleReal = null }) {
+function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, chargedPairs, lastChange, isRelevant = null, attributeKey = id => id, attributeEntries = entries => entries, numberKind = () => undefined, readAttribute = null, readAttributeRecord = null, evaluateCharge = null, floatDivide = null, scaleReal = null, nativeStore = null }) {
+  if (nativeStore) {
+    function captured(scope) {
+      const selected = scope ?? nativeStore.capture();
+      selected.assertCurrent();
+      return selected;
+    }
+    function backend(scope) {
+      const owner = nativeStore.get();
+      if (!owner) throw new Error("Original Godma numeric storage requires explicit asynchronous preparation.");
+      return owner.forManager(captured(scope), { now, attributeKey, readAttributeRecord });
+    }
+    // Configured pilots allocate NONE of the legacy maps below. Captures are
+    // passed through nested getters, never kept in mutable global scope.
+    return {
+      refresh: (item, info, update, scope, rawItem) => backend(scope).refresh(item, info, update, rawItem),
+      change: (item, attribute, time, amount, kind, mappings, raw, scope) => backend(scope).change(item, attribute, time, amount, kind, mappings, raw),
+      record: (item, attribute, at, scope) => backend(scope).record(item, attribute, at),
+      scalarRecord: (item, attribute, scope) => backend(scope).scalarRecord(item, attribute),
+      value: (item, attribute, at, scope) => backend(scope).value(item, attribute, at),
+      chargeInputs: (item, attribute, scope) => backend(scope).chargeInputs(item, attribute),
+      has: (item, scope) => backend(scope).has(item),
+      drop(ids, scope) {
+        const items = [...ids];
+        if (!items.length) return;
+        if (nativeStore.get()) return backend(scope).drop(items);
+        // PurgeEntry can precede any value refresh/static preparation. Its
+        // already-constructed native dicts need no arithmetic capability.
+        const selected = captured(scope);
+        for (const item of items) for (const name of ["attributesByItemAttribute", "chargedAttributesByItemAttribute"]) {
+          selected.assertCurrent();
+          const values = selected.manager.getAttr(name), key = BigInt(item);
+          if (values.getAttr("__contains__").call(key).truth()) values.getAttr("__delitem__").call(key);
+        }
+      },
+      clear(scope) {
+        if (nativeStore.get()) return backend(scope).clear();
+        // Cold teardown before any numeric publication still owns the actual
+        // constructed empty stores; it does not require static-data readiness.
+        const manager = captured(scope).manager;
+        manager.getAttr("attributesByItemAttribute").getAttr("clear").call();
+        manager.getAttr("chargedAttributesByItemAttribute").getAttr("clear").call();
+      },
+    };
+  }
   const attributes = new Map(), charged = new Map();
   // Python retains the numeric class when assigning a decoded value. Keep its
   // immutable source record beside the primitive, before normalization/copying.

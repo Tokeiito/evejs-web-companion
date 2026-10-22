@@ -14,16 +14,16 @@ class GodmaTypeFactsNotReadyError extends Error {
 }
 
 function createGodmaAttributeGetter({ data, cacheRecord, inventoryItem, typeFacts, fieldsOf, typeName = () => { throw new GodmaTypeNamesNotReadyError(); }, logException = () => {} }) {
-  function record(itemID, attributeID, at) {
+  function record(itemID, attributeID, at, scope) {
     const definition = data.definitionByID(attributeID);
     if (!definition) return Object.freeze({ value: null, kind: undefined });
     // Membership, not truthiness: cached None and zero both precede metadata.
     // The cache itself checks charged membership before scalar membership.
     let cached;
     try {
-      cached = cacheRecord(itemID, definition.attributeID, at);
+      cached = cacheRecord(itemID, definition.attributeID, at, scope);
     } catch (error) {
-      if (!(error instanceof ZeroDivisionError)) throw error;
+      if (!(error instanceof ZeroDivisionError) && !(error.name === "ZeroDivisionError" && error.pythonType)) throw error;
       // GetAttribute1858-1867: diagnostic expressions run BEFORE logging and
       // bare-reraise. Their failures deliberately replace the arithmetic error.
       const current = inventoryItem(itemID);

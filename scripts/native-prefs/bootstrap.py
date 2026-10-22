@@ -1985,9 +1985,9 @@ def _create_godma_rowset_types(owner, rows, error_log):
 
 def _prepare_godma_state_manager(owner, rowsets):
     # Construction preparation only. Original GetStateManager publishes onto
-    # this SAME Godma slot; these empty source caches are not active gameplay
-    # stores. InitializeData/Prime, notices and native cold RPC yielding remain
-    # separate demands, never a second populated authority beside pilotDogma.
+    # this SAME Godma slot. Runtime numeric publication belongs to the later
+    # coordinated storage capability; no active cache is populated here.
+    # InitializeData/Prime and native cold RPC yielding are separate demands.
     import types
     if getattr(owner, 'rowset_types', None) is not rowsets or not rowsets.complete:
         raise TypeError('StateManager requires the same complete original rowset types')
@@ -2088,6 +2088,73 @@ def _attach_godma_freshness(owner):
     result.tuple_key, result.notice_prefix, result.replace = tuple_key, notice_prefix, replace
     result.owns = owns
     owner.freshness = result
+    return result
+
+
+def _attach_godma_numeric_values(owner):
+    # Actual original-manager dictionaries/lists, never a second value/kind
+    # registry. Refresh executes the untouched installed original method.
+    import types, math
+    existing = getattr(owner, 'numeric_values', None)
+    if existing is not None:
+        return existing
+    data = getattr(owner, 'manager_data', None)
+    if data is None:
+        raise RuntimeError('Godma numeric values require the same prepared data owner')
+    code = zipimport.zipimporter(_archive + '/dogma').get_code('dogma.data')
+    if code is None or not code.co_filename.replace('\\', '/').endswith('/packages/dogma/data.py'):
+        raise ImportError('Not the installed Godma numeric data helper source')
+    for name in ('get_attribute', 'get_attribute_name'):
+        if name not in data.data.__dict__:
+            matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+            if len(matches) != 1:
+                raise ImportError('Ambiguous installed Godma numeric helper: ' + name)
+            setattr(data.data, name, types.FunctionType(matches[0], data.data.__dict__))
+    namespace = type(owner.instance).__dict__['__init__'].func_globals
+    if 'math' in namespace and namespace['math'] is not math:
+        raise TypeError('Original Godma math already has a different owner')
+    namespace['math'] = math
+    KeyVal = owner.constants_owner.modules['utillib'].KeyVal
+    result = types.ModuleType('companion.godma_numeric_values')
+
+    def new_info(time, wallclock):
+        return KeyVal(time=time, wallclockTime=wallclock, attributes={})
+
+    def ensure_charge_item(manager, item):
+        if item not in manager.chargedAttributesByItemAttribute:
+            manager.chargedAttributesByItemAttribute[item] = {}
+
+    def ratio_charge(charge, new, old):
+        # ApplyAttributeChange2559-2564, AFTER the scalar store. Always
+        # calculate the ratio before testing whether charge equals old.
+        ratio = float(new) / old
+        if charge == old:
+            charge = charge * ratio
+        if charge > new:
+            charge = new
+        return charge
+
+    def equal(left, right):
+        return left == right
+
+    def zero_capacity(state):
+        return state[3] == 0
+
+    def charge_at(manager, state, time):
+        return manager.GetChargeValue(state[0], state[1], state[2], state[3], time)
+
+    def drop(manager, item):
+        # Attribute/charge part of PurgeEntry2519; freshness is independent.
+        for container in (manager.attributesByItemAttribute, manager.chargedAttributesByItemAttribute):
+            try:
+                del container[item]
+            except KeyError:
+                pass
+
+    result.new_info, result.ensure_charge_item = new_info, ensure_charge_item
+    result.ratio_charge, result.equal = ratio_charge, equal
+    result.zero_capacity, result.charge_at, result.drop = zero_capacity, charge_at, drop
+    owner.numeric_values = result
     return result
 
 
