@@ -2,6 +2,7 @@
 
 const { nativeSessionScalar } = require("./clientSessionContext");
 const { createClientLocalizationSettings } = require("./clientLocalizationSettings");
+const { startClientRemoteObjectReleases } = require("./clientRemoteObjectReleases");
 
 async function createClientSessionOwners({ provider, session, clientRoot }) {
   const preferences = await provider.createOwner();
@@ -21,7 +22,7 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
   if (!provider || typeof provider.ready !== "function" || !preferences?.handler || !boot || !session || typeof session.onSessionAttributeUpdate !== "function" || typeof session.onConnectAttempt !== "function" || typeof session.sessionLifecycle !== "function" || typeof session.onClose !== "function") throw new TypeError("Actual runtime, transport, preferences and installed boot are required.");
   const before = session.sessionLifecycle();
   if (before.closed || before.loggedIn || before.revision !== 0 || before.connectAttemptRevision !== 0) throw new Error("Effective session fields must be bound before any login ingress.");
-  let runtime = null, module = null, failure = null, retired = false, revision = 0, connectRevision = 0;
+  let runtime = null, module = null, releases = null, failure = null, retired = false, revision = 0, connectRevision = 0;
   const queued = [];
   function refresh() {
     if (!module) return;
@@ -69,6 +70,7 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
   try {
     runtime = await provider.ready();
     module = runtime.values.global("_create_effective_session_context").call(preferences.handler, boot);
+    releases = startClientRemoteObjectReleases({ module, session });
     for (const batch of queued.splice(0)) apply(batch);
     refresh();
     if (retired) throw new Error("The transport closed during native session field preparation.");
@@ -76,13 +78,14 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
       module, localstorage: module.getAttr("localstorage"), builtins: module.getAttr("builtins"),
       session: module.getAttr("session"), fields: module.getAttr("fields"), transport: session,
       connectionFields: module.getAttr("connection_fields"),
+      remoteReleases: releases.lifecycle,
       preferences, boot, identity: runtime.identity,
       lifecycle: () => Object.freeze({ revision, connectRevision, retired, failed: failure !== null }),
       assertCurrent() { if (failure) throw failure; module.getAttr("assert_entry").call(); },
       refresh,
-      retire() { retired = true; refresh(); forgetChanges(); forgetAttempts(); forgetClose(); },
+      retire() { retired = true; releases.stop(); refresh(); forgetChanges(); forgetAttempts(); forgetClose(); },
     });
-  } catch (error) { retired = true; refresh(); forgetChanges(); forgetAttempts(); forgetClose(); throw error; }
+  } catch (error) { retired = true; releases?.stop(); refresh(); forgetChanges(); forgetAttempts(); forgetClose(); throw error; }
 }
 
 module.exports = { createClientEffectiveSessionContext, createClientSessionOwners };

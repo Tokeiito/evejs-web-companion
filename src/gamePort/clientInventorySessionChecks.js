@@ -1,8 +1,7 @@
 "use strict";
 
 const { nativeSessionScalar } = require("./clientSessionContext");
-const { ADDRESS, nodeAddress } = require("./packets");
-const { long } = require("./clientMarshal");
+const { projectNativeNodeAddress } = require("./clientMachoAddress");
 const { getDecodedNumberKind } = require("../gameProtocol/marshal");
 
 /** Original native inventory connections, owned by actual receipt holders.
@@ -39,18 +38,6 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
     }
     return nativeSessionScalar(runtime, { value, kind });
   }
-  function service(value) {
-    if (value.kind === "NoneType") return null;
-    if (value.kind === "str") return value.scalar;
-    if (value.kind === "unicode") return { type: "wstring", value: value.scalar };
-    throw new TypeError("The native node service has no prepared wire projection.");
-  }
-  function callID(value) {
-    if (value.kind === "NoneType") return null;
-    if (value.kind === "long") return long(value.scalar);
-    if (value.kind === "int") return value.scalar;
-    throw new TypeError("The native node call ID has no prepared wire projection.");
-  }
   return Object.freeze({
     capture(names) {
       current();
@@ -84,9 +71,7 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
               // replacing the record's field cannot retarget this invocation.
               const destination = scope.record.getAttr("destination");
               return { prepareDestination() {
-                const state = destination.getAttr("__getstate__").call();
-                if (state.getItem(0n).scalar !== ADDRESS.NODE || state.getItem(1n).kind !== "long") throw new TypeError("Only native remote node addresses are prepared for inventory dispatch.");
-                return nodeAddress(long(state.getItem(1n).scalar), service(state.getItem(2n)), callID(state.getItem(3n)));
+                return projectNativeNodeAddress(destination);
               } };
             },
           };

@@ -683,6 +683,26 @@ class GamePortSession {
     return this._cachedCall({ destination, prepareDestination, boundObject: objectID, service: null, method, args, kwargs }, this.objectCacheIdentities.get(objectID) ?? objectID);
   }
 
+  /** ObjectCallGPCS blocking=-1, MachoTransport.Write even-command source.
+   * Notification only: no call number, reply waiter or throttling.
+   */
+  releaseRemoteObjects(destination, released, minus) {
+    if (this.closed || !this.loggedIn) return false;
+    const identity = "ClientHasReleasedTheseObjects", method = identity, args = [];
+    const said = this.methodCallDetails.get(`${identity}.${method}`);
+    const kept = said ? this.cachedMethodCalls.get(this._methodCallKey(identity, method, args, said)) : undefined;
+    if (kept && !this._shouldVersionCheck(said, kept)) return false;
+    const machoVersion = kept ? { type: "list", items: [kept.stamp, kept.checksum] } : 1;
+    const packet = buildPacket(TYPE.NOTIFICATION, {
+      source: nodeAddress(null), destination, userID: this.userID,
+      body: [[1, { type: "substream", value: [released, method, args, dict([["machoVersion", machoVersion]])] }]],
+      oob: dict([["OID-", minus]]), journeyID: this.journeyID,
+    });
+    try { this._writePacket(packet); }
+    catch (error) { if (this.closed) return false; throw error; }
+    return true;
+  }
+
   /**
    * A call, made as the client makes every call: one at a time of any one thing (machobase.ThrottledCall, from
    * ServiceCallGPCS 697 and ObjectCallGPCS 616). The same call made again while it is out is not sent: it waits

@@ -728,6 +728,14 @@ def _create_effective_session_context(preferences, boot):
     namespace = {'__name__': 'carbon.common.script.sys.basesession', '__builtins__': __builtin__.__dict__,
                  'ROLE_LOGIN': constants.ROLE_LOGIN, 'prefs': preferences, 'strx': stringutil.strx, 'machobase': mode}
     source = module_code('carbon.common.script.sys.basesession', '/carbon/common/script/sys/basesession.py')
+    # autoexec_client_core102 creates the CLIENT session before login with a
+    # locally generated SID. It is not a SID copied from server packets. Own
+    # the entire original stdlib Random namespace and its genuine native RNG.
+    session_random = types.ModuleType('random')
+    session_random.__dict__['__builtins__'] = __builtin__.__dict__
+    types.FunctionType(module_code('random', '/stdlib/random.py'), session_random.__dict__)()
+    namespace['random'] = session_random
+    namespace['GetNewSid'] = types.FunctionType(definition(source, 'GetNewSid'), namespace)
     # Class bodies only create definitions and literals. No whole module import:
     # basesession also starts an ObjectKillah scheduler at module scope.
     core = types.ClassType('CoreSession', (), types.FunctionType(definition(source, 'CoreSession'), namespace)())
@@ -755,6 +763,7 @@ def _create_effective_session_context(preferences, boot):
     for name in original.__persistvars__ + ['locationid', 'corprole']:
         state.__dict__[name] = state.GetDefaultValueOfAttribute(name)
     state.__dict__['sessionType'] = session_constants.SESSION_TYPE_GAME
+    state.__dict__['sid'] = namespace['GetNewSid']()  # Selected CreateSession/GetNewSid -> CoreSession.sid input.
     state.__dict__['machoObjectConnectionsByObjectID'] = {}  # Original CoreSession647 literal.
 
     def display_list(name):
@@ -813,6 +822,51 @@ def _create_effective_session_context(preferences, boot):
         connection.clientSessionID += 1
 
     result.connection_fields, result.begin_connect_attempt = connection, begin_connect_attempt
+    # ObjectCall's connection-field phase belongs to the client BEFORE login,
+    # not to each later inventory/Godma owner. No fake synchronous RPC service.
+    object_call_fields = type('ObjectCallConnectionFields', (object,), {
+        '__module__': 'companion.object_call_connection_fields'})()
+    object_call_fields.machoNet, object_call_fields.releasedObjects = connection, {}
+    result.object_call_fields = object_call_fields
+
+    def release_calls():
+        # Named source port of ObjectCallGPCS35-65's one awake iteration.
+        # The real transport-owned wallclock loop supplies the 30000ms wait.
+        # Detach FIRST; reentrant releases belong to the new queue. Preserve
+        # native dict order, weak-proxy errors, all duplicate pairs and maxima.
+        if object_call_fields.releasedObjects:
+            tmp = object_call_fields.releasedObjects
+            object_call_fields.releasedObjects = {}
+            chrto = {}
+            for object_id, entries in tmp.iteritems():
+                for ref_id, sess, destination in entries:
+                    if hasattr(destination, 'nodeID'):
+                        try:
+                            if object_id not in sess.machoObjectConnectionsByObjectID:
+                                key = (sess.sid, destination.nodeID)
+                                if key in chrto:
+                                    chrto[key][2].append((object_id, ref_id))
+                                else:
+                                    chrto[key] = [sess, destination, [(object_id, ref_id)]]
+                        except ReferenceError:
+                            sys.exc_clear()
+            for group in chrto.itervalues():
+                minus = {}
+                for object_id, ref_id in group[2]:
+                    if object_id in minus:
+                        minus[object_id] = max(ref_id, minus[object_id])
+                    else:
+                        minus[object_id] = ref_id
+                # One send before advancing to the next group, as the source.
+                yield group[0], group[1], group[2], minus
+
+    def next_release(iterator):
+        try:
+            return iterator.next()
+        except StopIteration:
+            return None
+
+    result.release_calls, result.next_release = release_calls, next_release
 
     def run_masked(callback, arguments=(), props=None):
         # One embedding entry owns the entire ORIGINAL mask/callback/unmask.
@@ -856,6 +910,7 @@ def _create_effective_session_context(preferences, boot):
     result.preferences, result.boot, result.source_classes = preferences, boot, (core, original)
     result.get_object_uuid, result.get_object_by_uuid = namespace['GetObjectUUID'], namespace['GetObjectByUUID']
     result.objects_by_uuid = namespace['objectsByUUID']
+    result.get_new_sid, result.session_random = namespace['GetNewSid'], session_random
     result.last_notify, result.last_disappeared = {}, set()
     restore_current()
     return result
@@ -2232,13 +2287,9 @@ def _attach_inventory_session_checks(owner, context):
     wrapper = types.ClassType('MachoObjectCallWrapper', (), types.FunctionType(definition(code, 'MachoObjectCallWrapper'), namespace)())
     namespace['MachoObjectCallWrapper'] = wrapper
     connection_type = types.ClassType('MachoObjectConnection', (), types.FunctionType(classes[0], namespace)())
-    # Exact constructor inputs owned for this client, not a pretend ObjectCall
-    # service. No ObjectCallWithoutTheStars/ThrottledCall or release scheduler
-    # provider is installed. The untouched destructor can queue actual releases.
-    connection_fields = type('ObjectCallConnectionFields', (object,), {
-        '__module__': 'companion.object_call_connection_fields'})()
-    connection_fields.machoNet = context.connection_fields
-    connection_fields.releasedObjects = {}
+    # SAME prelogin connection-field owner, including its actual release queue.
+    # No ObjectCallWithoutTheStars/ThrottledCall service provider is installed.
+    connection_fields = context.object_call_fields
     perform = connection_type.__dict__['PerformSessionCheck']
     result.context, result.MachoAddress, result.GPSBadAddress = context, address, bad_address
     result.MachoObjectConnection, result.connection_fields = connection_type, connection_fields
