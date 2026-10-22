@@ -2091,6 +2091,40 @@ def _attach_godma_freshness(owner):
     return result
 
 
+def _attach_godma_inventory_rows(owner):
+    # Sole numeric metadata authority on the same original manager. The
+    # existing bounded notice/purge algorithm still owns async RPC/event work;
+    # native invByID containers and whole original UpdateItem are not supplied.
+    import types
+    existing = getattr(owner, 'inventory_rows', None)
+    if existing is not None:
+        return existing
+    rows = owner.rowset_types.rows
+    result = types.ModuleType('companion.godma_inventory_rows')
+
+    def raw_item(manager, item):
+        # Indexed access intentionally creates a fresh ItemWrapper. Storage
+        # and wire projections demand its actual shared BACKING row instead.
+        return dict.__getitem__(manager.invitems, item)
+
+    def native_keys(container):
+        return container.keys()
+
+    def new_values():
+        return []
+
+    def materialize(manager, values):
+        return rows.Row(manager.invitems.header, values)
+
+    def empty_set():
+        return set()
+
+    result.raw_item, result.native_keys = raw_item, native_keys
+    result.new_values, result.materialize, result.empty_set = new_values, materialize, empty_set
+    owner.inventory_rows = result
+    return result
+
+
 def _attach_godma_numeric_values(owner):
     # Actual original-manager dictionaries/lists, never a second value/kind
     # registry. Refresh executes the untouched installed original method.

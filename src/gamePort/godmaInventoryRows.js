@@ -29,9 +29,32 @@ const fittingFlag = flag => Number.isInteger(flag) && (
 );
 const worldLocation = id => id >= 30000000 && id <= 39999999 || id >= 60000000 && id <= 63999999;
 
-function createGodmaInventoryRows({ rowFields, registeredLocations = () => [] }) {
-  const rows = new Map();
-  const itemsByLocation = new Map();
+function createGodmaInventoryRows({ rowFields, registeredLocations = () => [], nativeStore = null, storage = null }) {
+  if (nativeStore) {
+    function scoped(scope) {
+      const selected = scope ?? nativeStore.capture();
+      selected.assertCurrent();
+      const owner = nativeStore.get();
+      if (!owner) throw new Error("Original Godma inventory storage requires explicit preparation.");
+      return createGodmaInventoryRows({ rowFields, registeredLocations, storage: owner.forManager(selected) });
+    }
+    return {
+      update: (row, scope) => scoped(scope).update(row),
+      ensureLocation: (item, scope) => scoped(scope).ensureLocation(item),
+      prime: (item, row, scope) => scoped(scope).prime(item, row),
+      coldPrime: (item, row, scope) => scoped(scope).coldPrime(item, row),
+      notice: (row, change, session, scope) => scoped(scope).notice(row, change, session),
+      flush: (item, scope) => scoped(scope).flush(item),
+      get: (item, scope) => scoped(scope).get(item),
+      has: (item, scope) => scoped(scope).has(item),
+      locationLoaded: (item, scope) => scoped(scope).locationLoaded(item),
+      purge: (keep, scope) => scoped(scope).purge(keep),
+      clear: scope => scoped(scope).clear(),
+    };
+  }
+  const rows = storage?.rows ?? new Map();
+  const itemsByLocation = storage?.itemsByLocation ?? new Map();
+  const emptySet = storage?.emptySet ?? (() => new Set());
 
   function required(fields, name) {
     if (!fields || !Object.prototype.hasOwnProperty.call(fields, name) || fields[name] === undefined) {
@@ -57,9 +80,9 @@ function createGodmaInventoryRows({ rowFields, registeredLocations = () => [] })
 
     const doUpdate = rows.has(itemID);
     rows.set(itemID, row);
-    if (LOCATION_CATEGORIES.has(categoryID) || groupID === 1) itemsByLocation.set(itemID, new Set());
+    if (LOCATION_CATEGORIES.has(categoryID) || groupID === 1) itemsByLocation.set(itemID, emptySet());
     if (!worldLocation(locationID)) {
-      const parent = itemsByLocation.get(locationID);
+      const parent = storage ? itemsByLocation.required(locationID) : itemsByLocation.get(locationID);
       // Native raises KeyError here after invitems replacement; do not create
       // a missing parent or roll back that already-retained metadata.
       if (!parent) throw new Error(`Godma location ${String(locationID)} has no membership bucket.`);
@@ -79,7 +102,7 @@ function createGodmaInventoryRows({ rowFields, registeredLocations = () => [] })
 
   function ensureLocation(locationID) {
     const id = key(locationID);
-    if (!itemsByLocation.has(id)) itemsByLocation.set(id, new Set());
+    if (!itemsByLocation.has(id)) itemsByLocation.set(id, emptySet());
   }
 
   // StateManager.OnGodmaPrimeItem1289: cold bucket creation is independent of
@@ -154,6 +177,11 @@ function createGodmaInventoryRows({ rowFields, registeredLocations = () => [] })
         result.scatters.push({ kind: "raw", row, change: changeMap, source: "incoming" });
         rows.delete(itemID);
         const bucket = itemsByLocation.get(locationID);
+        if (storage && bucket) {
+          try { bucket.remove(itemID); }
+          catch (error) { error.godmaNotice = result; throw error; }
+          return result;
+        }
         if (bucket && !bucket.delete(itemID)) {
           const error = new Error(`Godma location ${String(locationID)} does not contain ${String(itemID)}.`);
           // Native scatters/deletes before set.remove raises. Preserve that

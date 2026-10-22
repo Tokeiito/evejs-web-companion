@@ -2,10 +2,19 @@
 
 const { getDecodedNumberKind } = require("../gameProtocol/marshal");
 const { attributePythonType } = require("./clientDogmaArithmetic");
+const GODMA_NATIVE_ROW = Symbol("original Godma backing row");
+
+function godmaNativeRecord(value) {
+  const type = value.kind;
+  const kind = type === "float" ? "real" : type === "int" || type === "long" ? "integer" : undefined;
+  return Object.freeze({ value: value.scalar, native: value,
+    kind: kind && Object.freeze({ kind, pythonType: type, source: "original-godma-heap" }) });
+}
 
 // Preserve ingress classes before fieldsOf/key/number or a spread loses the
 // decoder sidecar. A field record is a view of the actual reply, not a cache.
 function decodedFieldRecord(info, name) {
+  if (info?.[GODMA_NATIVE_ROW]) return godmaNativeRecord(info[GODMA_NATIVE_ROW].getAttr(name));
   const dict = info?.type === "object" ? info.args : info;
   if (Array.isArray(dict?.entries)) {
     const pair = dict.entries.find(([key]) => (Buffer.isBuffer(key) ? key.toString("utf8") : key) === name);
@@ -71,4 +80,4 @@ function createClientGodmaFreshness({ runtime, owner, module, context, assertCur
   });
 }
 
-module.exports = { createClientGodmaFreshness, decodedFieldRecord, createGodmaNativeRecordConverter };
+module.exports = { createClientGodmaFreshness, decodedFieldRecord, createGodmaNativeRecordConverter, godmaNativeRecord, GODMA_NATIVE_ROW };

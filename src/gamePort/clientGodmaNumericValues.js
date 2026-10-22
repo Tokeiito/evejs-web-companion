@@ -1,7 +1,7 @@
 "use strict";
 
 const { getDecodedNumberKind } = require("../gameProtocol/marshal");
-const { decodedFieldRecord, createGodmaNativeRecordConverter } = require("./clientGodmaFreshness");
+const { decodedFieldRecord, createGodmaNativeRecordConverter, godmaNativeRecord: record } = require("./clientGodmaFreshness");
 
 /** Canonical numeric storage on the SAME original StateManager. These are
  * actual dicts/scalars and mutable charge lists, with no JS value/type/input
@@ -13,12 +13,6 @@ function createClientGodmaNumericValues({ runtime, owner, module, assertCurrent 
   const native = createGodmaNativeRecordConverter(runtime, tuple);
   const nameBytes = name => Buffer.from(name, "utf8");
   const index = i => runtime.values.int(i);
-  function record(value) {
-    const type = value.kind;
-    const kind = type === "float" ? "real" : type === "int" || type === "long" ? "integer" : undefined;
-    return Object.freeze({ value: value.scalar, native: value,
-      kind: kind && Object.freeze({ kind, pythonType: type, source: "original-godma-heap" }) });
-  }
   return Object.freeze({
     forManager(scope, { now, attributeKey, readAttributeRecord }) {
       const manager = scope.manager;
@@ -122,6 +116,13 @@ function createClientGodmaNumericValues({ runtime, owner, module, assertCurrent 
       }
       return Object.freeze({
         manager, refresh, change, record: read,
+        defaultRecord(item, attribute) {
+          current();
+          // Caller admits only known numeric definitions, AFTER cache miss.
+          // Original GetAttribute owns metadata/category/default/error order.
+          if (owner.getAttr("type_wrappers").getAttr("complete").truth() !== true) throw new Error("Original numeric default dependencies are unprepared.");
+          return record(manager.getAttr("GetAttribute").call(lookup(item), name(attribute)));
+        },
         scalarRecord(item, attribute) {
           const key = name(attribute), values = scalarValues(lookup(item));
           return hasName(values, key) ? record(values.getItem(key)) : undefined;

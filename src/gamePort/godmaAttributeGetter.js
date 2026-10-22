@@ -13,7 +13,7 @@ class GodmaTypeFactsNotReadyError extends Error {
   constructor(typeID) { super(`Dogma type category ${String(typeID)} is unavailable.`); this.name = "GodmaTypeFactsNotReadyError"; this.typeID = typeID; }
 }
 
-function createGodmaAttributeGetter({ data, cacheRecord, inventoryItem, typeFacts, fieldsOf, typeName = () => { throw new GodmaTypeNamesNotReadyError(); }, logException = () => {} }) {
+function createGodmaAttributeGetter({ data, cacheRecord, inventoryItem, typeFacts, fieldsOf, defaultRecord = null, typeName = () => { throw new GodmaTypeNamesNotReadyError(); }, logException = () => {} }) {
   function record(itemID, attributeID, at, scope) {
     const definition = data.definitionByID(attributeID);
     if (!definition) return Object.freeze({ value: null, kind: undefined });
@@ -26,7 +26,7 @@ function createGodmaAttributeGetter({ data, cacheRecord, inventoryItem, typeFact
       if (!(error instanceof ZeroDivisionError) && !(error.name === "ZeroDivisionError" && error.pythonType)) throw error;
       // GetAttribute1858-1867: diagnostic expressions run BEFORE logging and
       // bare-reraise. Their failures deliberately replace the arithmetic error.
-      const current = inventoryItem(itemID);
+      const current = inventoryItem(itemID, scope);
       if (current === null || current === undefined) throw new KeyError(itemID);
       const currentFields = fieldsOf(current);
       if (!currentFields.has("typeID")) throw new TypeError("Godma diagnostic metadata requires typeID.");
@@ -36,7 +36,8 @@ function createGodmaAttributeGetter({ data, cacheRecord, inventoryItem, typeFact
       throw error;
     }
     if (cached !== undefined) return cached;
-    const item = inventoryItem(itemID);
+    if (defaultRecord) return defaultRecord(itemID, definition.attributeID, scope);
+    const item = inventoryItem(itemID, scope);
     if (item === null || item === undefined) throw new KeyError(itemID);
     const fields = fieldsOf(item);
     if (!fields.has("typeID") || !fields.has("locationID")) throw new TypeError("Godma inventory metadata requires typeID and locationID.");

@@ -24,6 +24,7 @@ function createGodmaNumericValues({ fieldsOf, number, clock, now, chargeValue, c
       change: (item, attribute, time, amount, kind, mappings, raw, scope) => backend(scope).change(item, attribute, time, amount, kind, mappings, raw),
       record: (item, attribute, at, scope) => backend(scope).record(item, attribute, at),
       scalarRecord: (item, attribute, scope) => backend(scope).scalarRecord(item, attribute),
+      defaultRecord: (item, attribute, scope) => backend(scope).defaultRecord(item, attribute),
       value: (item, attribute, at, scope) => backend(scope).value(item, attribute, at),
       chargeInputs: (item, attribute, scope) => backend(scope).chargeInputs(item, attribute),
       has: (item, scope) => backend(scope).has(item),
