@@ -114,9 +114,10 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
       assertCurrent();
       return inventoryRowsPreparation ??= (async () => {
         await prepareStateManager();
+        const wireRows = await inventoryHeader.prepareWireRows();
         assertCurrent();
         const rows = runtime.values.global("_attach_godma_inventory_rows").call(module);
-        return createClientGodmaInventoryRows({ runtime, owner: module, module: rows, assertCurrent });
+        return createClientGodmaInventoryRows({ runtime, owner: module, module: rows, assertCurrent, wireRows });
       })();
     },
     prepareChargeMappings() {

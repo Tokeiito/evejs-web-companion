@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 73fe0d943, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js 062b2a2e1, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -134,12 +134,6 @@ function setDecodedNumberKind(container, slot, kind) {
   }
   if (!kinds) decodedNumberKinds.set(container, kinds = new Map());
   kinds.set(String(slot), kind);
-}
-
-function copyDecodedNumberKinds(source, target) {
-  const kinds = decodedNumberKinds.get(source);
-  if (kinds) decodedNumberKinds.set(target, new Map(kinds));
-  return target;
 }
 
 // Child decodes are synchronous. Capture their kind before another child can
@@ -1495,26 +1489,6 @@ function readSaveIndex(state) {
   return index;
 }
 
-function cloneDecodedValue(value) {
-  if (Buffer.isBuffer(value)) {
-    return copyDecodedNumberKinds(value, Buffer.from(value));
-  }
-
-  if (Array.isArray(value)) {
-    return copyDecodedNumberKinds(value, value.map((entry) => cloneDecodedValue(entry)));
-  }
-
-  if (value && typeof value === "object") {
-    const cloned = {};
-    for (const [key, entryValue] of Object.entries(value)) {
-      cloned[key] = cloneDecodedValue(entryValue);
-    }
-    return copyDecodedNumberKinds(value, cloned);
-  }
-
-  return value;
-}
-
 function readSizeEx(state) {
   const first = readUInt8(state);
   if (first === 0xff) {
@@ -1914,7 +1888,10 @@ function decodeValue(state) {
         index > 0 &&
         index <= state.storedObjects.length
       ) {
-        result = cloneDecodedValue(state.storedObjects[index - 1]);
+        // CCP blue/src/Marshal.cpp ReadObjectReference returns mShared[index]
+        // with an added reference. Rows, descriptors and object cells must
+        // retain that identity and their existing scalar provenance.
+        result = state.storedObjects[index - 1];
         numberKind = state.storedNumberKinds?.[index - 1];
       } else {
         result = null;

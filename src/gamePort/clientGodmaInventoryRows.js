@@ -1,14 +1,11 @@
 "use strict";
 
-const { decodedFieldRecord, createGodmaNativeRecordConverter, GODMA_NATIVE_ROW } = require("./clientGodmaFreshness");
-
 /** Native backing rows + location dict-of-sets only. Real passive inventory
  * registrations remain owned by the existing transport inventory cache. No
  * invented invByID containers, whole native notice/Prime or loaded-node claim.
  */
-function createClientGodmaInventoryRows({ runtime, owner, module, assertCurrent }) {
-  const native = createGodmaNativeRecordConverter(runtime,
-    runtime.values.global("_attach_godma_freshness").call(owner).getAttr("tuple_key"));
+function createClientGodmaInventoryRows({ runtime, owner, module, assertCurrent, wireRows }) {
+  if (!wireRows?.materialize || !wireRows?.project) throw new TypeError("The same inventory owner's wire-row ingress is required.");
   const lookupKey = value => value === null ? runtime.values.none() : runtime.values.long(BigInt(value));
   const jsKey = value => {
     const scalar = value.scalar;
@@ -34,37 +31,11 @@ function createClientGodmaInventoryRows({ runtime, owner, module, assertCurrent 
       }
       function project(row) {
         current();
-        const names = row.getAttr("__header__").getAttr("Keys").call(), fields = {};
-        for (let i = 0, n = names.getAttr("__len__").call().scalar; i < n; i++) {
-          const name = names.getItem(runtime.values.int(i)).scalar.toString("utf8");
-          // Preserve source demand order: metadata/category/purge reads do not
-          // eagerly evaluate unrelated object cells or virtual columns.
-          Object.defineProperty(fields, name, { enumerable: true, get() {
-            const value = row.getAttr(name);
-            return value.kind === "opaque" ? value : value.scalar;
-          } });
-        }
-        // Ephemeral wire view with its real backing provenance. This symbol
-        // never enters JSON or becomes another retained row/value registry.
-        const result = { type: "row", fields };
-        Object.defineProperty(result, GODMA_NATIVE_ROW, { value: row });
-        return result;
+        return wireRows.project(row);
       }
       function materialize(row) {
         current();
-        if (row[GODMA_NATIVE_ROW]) return row[GODMA_NATIVE_ROW];
-        const header = field("invitems").getAttr("header"), names = header.getAttr("Keys").call();
-        const virtual = header.getAttr("_virtual"), virtualCount = virtual.kind === "NoneType" ? 0 : virtual.getAttr("__len__").call().scalar;
-        const values = module.getAttr("new_values").call(), n = names.getAttr("__len__").call().scalar - virtualCount;
-        // Physical columns only; original shared header computes StackSize and
-        // Singleton. Decode provenance precedes normalized metadata reads.
-        for (let i = 0; i < n; i++) {
-          const name = names.getItem(runtime.values.int(i)).scalar.toString("utf8"), record = decodedFieldRecord(row, name);
-          const value = typeof record.value === "string" || Buffer.isBuffer(record.value)
-            ? runtime.values.convert(record.value) : native(record);
-          values.getAttr("append").call(value);
-        }
-        return module.getAttr("materialize").call(manager, values);
+        return wireRows.materialize(row);
       }
       const rows = {
         has: item => contains(field("invitems"), key(item)),

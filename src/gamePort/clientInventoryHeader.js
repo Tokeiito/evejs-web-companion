@@ -3,6 +3,7 @@
 const { ClientInventoryDescriptor, ClientInventoryDescriptorNotReadyError } = require("./clientInventoryDescriptor");
 const { createClientRowDescriptor } = require("./clientRowDescriptor");
 const { createClientRow } = require("./clientRow");
+const { createClientInventoryRows } = require("./clientInventoryRows");
 
 /** One native invCache header field, shared with the existing inventory owner.
  * Async JS demand is explicit; original compiled GetItemHeader runs warm only.
@@ -49,9 +50,17 @@ async function createClientInventoryHeader({ provider, staticService, getItemDes
     },
   });
   let rows = null;
+  let wireRows = null;
   let containerFields = null;
   return Object.freeze({
     instance, descriptors, staticService, context,
+    prepareWireRows() {
+      assertCurrent();
+      return wireRows ??= (rows ??= createClientRow({ provider, descriptors })).then(prepared => {
+        assertCurrent();
+        return createClientInventoryRows({ runtime, rows: prepared, descriptors, assertCurrent });
+      });
+    },
     attachContainerFields(fields) {
       assertCurrent();
       if (fields.getAttr("broker") !== instance || !fields.getAttr("complete").truth()) throw new TypeError("Original container fields require this same complete broker owner.");
