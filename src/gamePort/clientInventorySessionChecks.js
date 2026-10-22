@@ -20,7 +20,7 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
           current();
           if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual returned inventory object is required.");
           const record = module.getAttr("receipt").call(context.session, policy, Buffer.from(objectID, "utf8"));
-          return Object.freeze({ record, check() { current(); return module.getAttr("perform").call(record); } });
+          return Object.freeze({ record, check() { current(); return module.getAttr("perform_in_context").call(context.module, record); } });
         },
       });
     },

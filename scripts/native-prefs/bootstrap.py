@@ -693,8 +693,9 @@ def _create_session_context(field_state=None):
 def _create_effective_session_context(preferences, boot):
     # A named FIELD phase, not Session.__init__/__ChangeAttribute or the engine
     # lifecycle. Definitions/literals and pure field helpers are original code;
-    # clocks, indexes, history, masquerades and service broadcasts are not run.
-    import types, __builtin__, dis
+    # clocks, indexes, history and service broadcasts are not run. Original
+    # masks are a synchronous native-entry capability on this SAME field owner.
+    import types, __builtin__, dis, weakref
 
     def module_code(name, suffix):
         prefix = name.rpartition('.')[0].replace('.', '/')
@@ -735,7 +736,7 @@ def _create_effective_session_context(preferences, boot):
     selected = {'__module__': 'companion.effective_session_fields',
                 '__persistvars__': original.__persistvars__,
                 '__attributesWithDefaultValueOfZero__': original.__attributesWithDefaultValueOfZero__}
-    for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets'):
+    for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets', 'Masquerade', 'GetActualSession'):
         selected[name] = core.__dict__[name]
     selected['__repr__'] = core.__dict__['__repr__']
     for name in ('RecalculateDependantAttributes', 'RecalculateDependantAttributesWithChanges'):
@@ -776,6 +777,21 @@ def _create_effective_session_context(preferences, boot):
     state.additionalAttributesToPrint = display_list('additionalAttributesToPrint')
     state.additionalHexAttributes = display_list('additionalHexAttributes')
     result = _create_session_context(state)
+    namespace.update({'weakref': weakref, 'localstorage': result.localstorage})
+    mask = type('MasqueradeMask', (object,), types.FunctionType(definition(source, 'MasqueradeMask'), namespace)())
+    namespace['MasqueradeMask'] = mask
+
+    def run_masked(callback, arguments=(), props=None):
+        # One embedding entry owns the entire ORIGINAL mask/callback/unmask.
+        # No mask spans a JS await or a different Stackless current tasklet.
+        # Original SetLocalStorage chooses tasklet storage or its real private
+        # main fallback; do not replace it or make UnMask idempotent.
+        result.assert_entry()
+        active_mask = state.Masquerade(props)
+        try:
+            return callback(*arguments)
+        finally:
+            active_mask.UnMask()
 
     def restore_current():
         result.assert_entry()
@@ -802,6 +818,7 @@ def _create_effective_session_context(preferences, boot):
 
     del result.publish  # Effective state is never rebuilt from a raw snapshot.
     result.restore_current, result.receive = restore_current, receive
+    result.run_masked, result.MasqueradeMask = run_masked, mask
     result.wire_pair = lambda old, new: (old, new)
     result.preferences, result.boot, result.source_classes = preferences, boot, (core, original)
     result.last_notify, result.last_disappeared = {}, set()
@@ -2154,7 +2171,13 @@ def _attach_inventory_session_checks(owner):
     def receipt(session, policy, object_id):
         return KeyVal(session=session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id)
 
+    def perform_in_context(context, record):
+        if record.session is not context.session:
+            raise ValueError('Inventory checks must use their actual native session owner')
+        return context.run_masked(perform, (record,))
+
     result.new_policy, result.receipt, result.perform = new_policy, receipt, perform
+    result.perform_in_context = perform_in_context
     owner.inventory_session_checks = result
     return result
 

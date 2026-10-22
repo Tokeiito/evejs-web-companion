@@ -15,6 +15,7 @@ async function createClientSessionOwners({ provider, session, clientRoot }) {
 /** Original default/comparison/dependent-field phase, subscribed BEFORE login.
  * Raw transport records stay separate. This is not CoreSession construction,
  * __ChangeAttribute clocks/indexes/history, service broadcasts or Get readiness.
+ * Original Masquerade/UnMask stays within one synchronous native callback entry.
  */
 async function createClientEffectiveSessionContext({ provider, session, preferences, boot }) {
   if (!provider || typeof provider.ready !== "function" || !preferences?.handler || !boot || !session || typeof session.onSessionAttributeUpdate !== "function" || typeof session.sessionLifecycle !== "function" || typeof session.onClose !== "function") throw new TypeError("Actual runtime, transport, preferences and installed boot are required.");
