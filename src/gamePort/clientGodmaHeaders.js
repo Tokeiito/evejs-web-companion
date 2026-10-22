@@ -5,6 +5,7 @@ const { createClientGodmaFreshness } = require("./clientGodmaFreshness");
 const { createClientGodmaChargeMappings } = require("./clientGodmaChargeMappings");
 const { createClientGodmaNumericValues } = require("./clientGodmaNumericValues");
 const { createClientGodmaInventoryRows } = require("./clientGodmaInventoryRows");
+const { createClientGodmaEffectRows } = require("./clientGodmaEffectRows");
 
 /** Original selected Godma constructor and descriptor properties. The existing
  * pilot dogma owns this capability and its prepared canonical numeric stores.
@@ -38,6 +39,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   let chargeMappingPreparation = null;
   let numericValuePreparation = null;
   let inventoryRowsPreparation = null;
+  let effectRowsPreparation = null;
   function prepareStateManager() {
     assertCurrent();
     return managerPreparation ??= (async () => {
@@ -78,6 +80,15 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
     },
     prepareStateManager,
     prepareStateManagerData,
+    prepareEffectRows() {
+      assertCurrent();
+      return effectRowsPreparation ??= (async () => {
+        await prepareStateManager();
+        assertCurrent();
+        const rows = runtime.values.global("_attach_godma_effect_rows").call(module);
+        return createClientGodmaEffectRows({ runtime, owner: module, module: rows, assertCurrent });
+      })();
+    },
     prepareInventoryRows() {
       assertCurrent();
       return inventoryRowsPreparation ??= (async () => {

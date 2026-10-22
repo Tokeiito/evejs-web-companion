@@ -331,6 +331,7 @@ function createPilotDogma({
   let godmaHeaders = null, pendingGodmaHeaders = null;
   let nativeFreshness = null, pendingNativeFreshness = null;
   let nativeInventoryRows = null;
+  let nativeEffectRows = null;
   let nativeDefaultGetter = null, pendingNativeDefaultGetter = null;
   function initializeNativeDefaultGetter() {
     return pendingNativeDefaultGetter ??= initializeNativeGodmaHeaders().then(owner => owner.prepareTypeWrappers()).then(owner => {
@@ -352,8 +353,8 @@ function createPilotDogma({
   function initializeNativeFreshness() {
     if (!createNativeClientGodmaHeaders) return Promise.resolve(null);
     if (nativeFreshness) return Promise.resolve(nativeFreshness);
-    return pendingNativeFreshness ??= initializeNativeGodmaHeaders().then(owner => Promise.all([owner.prepareFreshness(), owner.prepareInventoryRows()])).then(([freshness, rows]) => {
-      nativeInventoryRows = rows; nativeFreshness = freshness; return freshness;
+    return pendingNativeFreshness ??= initializeNativeGodmaHeaders().then(owner => Promise.all([owner.prepareFreshness(), owner.prepareInventoryRows(), owner.prepareEffectRows()])).then(([freshness, rows, effects]) => {
+      nativeInventoryRows = rows; nativeEffectRows = effects; nativeFreshness = freshness; return freshness;
     });
   }
   function withFreshness(work) {
@@ -495,7 +496,9 @@ function createPilotDogma({
       attributeEntries: entries => orderEntries(entries.map(([id, value, kind, idKind]) => [number(id), value, kind, idKind])),
     } : {}),
   });
-  const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated }) : null;
+  const numericEffects = nativeEffectData ? createGodmaNumericEffects({ data: nativeEffectData, fieldsOf, number, key, onActivated: onNumericEffectActivated,
+    nativeStore: createNativeClientGodmaHeaders ? { get: () => nativeEffectRows, capture: () => nativeFreshness.captureWarm() } : null,
+  }) : null;
   const primeChannel = createGodmaPrimeChannel();
   const withAttributes = (work, captured) => {
     const run = scope => {
@@ -515,6 +518,27 @@ function createPilotDogma({
   };
   /** itemID -> Map(effectID -> { isActive, startTime, duration, repeat, targetID }). */
   const effects = new Map();
+  const nativeEffectItem = itemID => createNativeClientGodmaHeaders && !Array.isArray(itemID) && (Number.isSafeInteger(key(itemID)) || typeof key(itemID) === "bigint");
+  function rememberEffectEnvironments(itemID, listed, merge) {
+    if (!nativeEffectItem(itemID)) return;
+    const held = new Map(merge ? effects.get(key(itemID)) ?? [] : []);
+    for (const [effectID, line] of listed?.entries ?? []) {
+      if (Array.isArray(line)) held.set(number(effectID), { environment: line.slice(0, 7) });
+    }
+    effects.set(key(itemID), held);
+  }
+  // Configured numeric entries in effects retain ONLY environment projection
+  // data, never a second active/timing authority. All row fields come from the
+  // original manager; raw/tuple readers keep their existing separate domain.
+  function effectNow(itemID, effectID) {
+    if (!nativeEffectItem(itemID)) return effects.get(key(itemID))?.get(effectID) ?? null;
+    const row = numericEffects?.byID(itemID, effectID);
+    if (!row) return null;
+    const environment = effects.get(key(itemID))?.get(Number(effectID))?.environment;
+    const line = environment ? [...environment, row.startTime, row.duration, row.repeat] : null;
+    if (line) line[ENV_IDX_TARGET] = row.targetID;
+    return { ...row, line };
+  }
   /** item key -> { typeID, groupID, categoryID, flagID, locationID }: what each held item is and where. A charge in a module has no group. */
   const identity = new Map();
   /** item key -> { itemID, row }: each held item's GET-INFO row as GetAllInfo, OnGodmaPrimeItem or ItemGetInfo last gave it. */
@@ -730,7 +754,10 @@ function createPilotDogma({
     if (updated.refresh) {
       return withAttributes((scope, mappings) => {
         numericValues.refresh(id, row, updated.doUpdate, scope, rawItem, mappings);
-        if (numericEffects) return numericEffects.refresh(inventory.itemID, number(inventory.typeID), row, updated.doUpdate).then(() => {
+        if (numericEffects) return numericEffects.refresh(inventory.itemID, number(inventory.typeID), row, updated.doUpdate, {
+          scope, item: rawItem, type: decodedFieldRecord(invItem, "typeID"),
+          onPublished: () => rememberEffectEnvironments(inventory.itemID, fields.get("activeEffects"), updated.doUpdate),
+        }).then(() => {
           scope?.assertCurrent();
           loadRow(id, row, { mergeAttributes: updated.doUpdate, nativeAttributes: true, freshness: scope, rawItem });
           return id;
@@ -819,11 +846,12 @@ function createPilotDogma({
       identity.set(key(itemID), { typeID: number(inventory.typeID), groupID: number(inventory.groupID), categoryID: number(inventory.categoryID), flagID: number(inventory.flagID), locationID: key(inventory.locationID) });
     }
     // godma.RefreshItemEffects: the effects active on the item, each with when it began, how long a cycle is and how many are left.
-    const active = new Map();
+    const active = new Map(nativeEffectItem(itemID) && mergeAttributes ? effects.get(key(itemID)) ?? [] : []);
     const listed = fields.get("activeEffects");
     for (const [effectID, line] of listed && Array.isArray(listed.entries) ? listed.entries : []) {
       if (!Array.isArray(line)) continue;
-      active.set(number(effectID), { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null, line });
+      active.set(number(effectID), nativeEffectItem(itemID) ? { environment: line.slice(0, 7) }
+        : { isActive: true, startTime: clock(line[7]), duration: number(line[8]), repeat: number(line[9]), targetID: line[ENV_IDX_TARGET] ?? null, line });
     }
     effects.set(key(itemID), active);
   }
@@ -879,7 +907,10 @@ function createPilotDogma({
             numericValues.refresh(refresh.itemID, info, refresh.doUpdate, scope, decodedFieldRecord(refresh.row, "itemID"), mappings);
             if (numericEffects) {
               const captured = rowFields(refresh.row);
-              return numericEffects.refresh(captured.itemID, number(captured.typeID), info, refresh.doUpdate);
+              return numericEffects.refresh(captured.itemID, number(captured.typeID), info, refresh.doUpdate, {
+                scope, item: decodedFieldRecord(refresh.row, "itemID"), type: decodedFieldRecord(refresh.row, "typeID"),
+                onPublished: () => rememberEffectEnvironments(captured.itemID, fieldsOf(info).get("activeEffects"), refresh.doUpdate),
+              });
             }
           }, freshness);
         }
@@ -895,7 +926,7 @@ function createPilotDogma({
   function flushNumericMetadata(locationID, freshness = null) {
     const { dropped, unregistered } = primeInventory.flush(locationID, freshness);
     numericValues.drop(dropped, freshness);
-    numericEffects?.drop(dropped);
+    numericEffects?.drop(dropped, freshness);
     for (const id of dropped) {
       attributes.delete(id);
       charged.delete(id);
@@ -962,7 +993,8 @@ function createPilotDogma({
     const given = fieldsOf(kept.row).get("activeEffects");
     const lineGiven = new Map((given && Array.isArray(given.entries) ? given.entries : []).map(([effectID, line]) => [number(effectID), line]));
     const entries = [];
-    for (const [effectID, effect] of held) {
+    const current = nativeEffectItem(itemID) ? [...numericEffects.entries(itemID)].map(row => [Number(row.effectID), effectNow(itemID, Number(row.effectID))]) : held;
+    for (const [effectID, effect] of current) {
       if (!effect.isActive) continue;
       const line = effect.line ?? lineGiven.get(effectID);
       if (Array.isArray(line)) entries.push([effectID, line]);
@@ -1029,6 +1061,7 @@ function createPilotDogma({
 
   /** clientDogmaLocation.Activate and StopEffect: an effect the client starts or stops itself, on an item that is held. */
   function setEffect(itemID, effectID, isActive) {
+    if (nativeEffectItem(itemID)) return numericEffects.setActive(itemID, effectID, isActive);
     const held = effects.get(key(itemID));
     if (!held) return false;
     held.set(effectID, { isActive, startTime: now(), duration: null, repeat: null, targetID: null });
@@ -1146,10 +1179,15 @@ function createPilotDogma({
    * godma.OnGodmaShipEffect: an effect on one of the pilot's items has started
    * or stopped. One for an item that is not held is nothing, as on the client.
    */
-  function readerShipEffect(args) {
+  function readerShipEffect(args, scope) {
     const [itemID, effectID, , , active, environment, startTime, duration, repeat] = args;
     const held = effects.get(key(itemID));
     if (!held) return false;
+    if (nativeEffectItem(itemID)) {
+      if (!numericEffects.byID(itemID, effectID, scope)) return false;
+      held.set(number(effectID), { environment: Array.isArray(environment) ? environment.slice(0, 7) : null });
+      return true;
+    }
     held.set(number(effectID), {
       isActive: Boolean(active),
       startTime: clock(startTime),
@@ -1163,7 +1201,12 @@ function createPilotDogma({
     return true;
   }
 
-  function shipEffect(args) {
+  function shipEffect(args, source = args, offset = 0) {
+    if (createNativeClientGodmaHeaders) return withFreshness(scope => primeChannel.receive(() => withAttributes(() =>
+      numericEffects.apply(args, { scope, source, offset }).then(result => {
+        if (result) readerShipEffect(args, scope);
+        return result;
+      }), scope)));
     return primeChannel.receive(() => {
       if (numericEffects) return numericEffects.apply(args).finally(() => readerShipEffect(args));
       return readerShipEffect(args);
@@ -1233,7 +1276,7 @@ function createPilotDogma({
         lastEffect.set(`${event[1]}:${event[2]}`, event);
       }
       for (const event of lastEffect.values()) {
-        const work = shipEffect(event.slice(1));
+        const work = shipEffect(event.slice(1), event, 1);
         if (work && typeof work.then === "function") pending.push(work);
       }
       // OnMultiEvent_238-245 invokes the effect scatter before the attribute
@@ -1277,7 +1320,13 @@ function createPilotDogma({
     }
     if (notification.method === "OnGodmaEffectInfo" && numericEffects) {
       const [itemID, typeID, activeEffects, time] = notification.args;
-      return numericEffects.refresh(itemID, number(typeID), { type: "dict", entries: [["activeEffects", activeEffects], ["time", time]] }, true).then(() => true);
+      return withFreshness(scope => withAttributes(() => numericEffects.refresh(itemID, number(typeID),
+        { type: "dict", entries: [["activeEffects", activeEffects], ["time", time]] }, true, {
+          scope, item: { value: itemID, kind: getDecodedNumberKind(notification.args, 0) },
+          type: { value: typeID, kind: getDecodedNumberKind(notification.args, 1) },
+          time: { value: time, kind: getDecodedNumberKind(notification.args, 3) },
+          onPublished: () => rememberEffectEnvironments(itemID, activeEffects, true),
+        }), scope)).then(() => true);
     }
     if (notification.method === "OnHeatAdded" || notification.method === "OnHeatRemoved") {
       // clientDogmaLocation.OnHeatAdded, OnHeatRemoved(heatID, moduleID). The client's ship is its current one;
@@ -1338,10 +1387,11 @@ function createPilotDogma({
   function modulesWith(shipID, kinds) {
     const ship = key(shipID);
     const found = [];
-    for (const [itemID, held] of effects) {
+    for (const [itemID, projected] of effects) {
       if (itemID === ship || typeof itemID !== "number") continue;
+      const held = nativeEffectItem(itemID) ? [...numericEffects.entries(itemID)].map(row => [Number(row.effectID), row]) : projected;
       for (const [effectID, effect] of held) {
-        if (effect.isActive && effectID !== EFFECT_ONLINE && kinds.has(effectCategory(effectID))) {
+        if (effect.isActive && effectID !== EFFECT_ONLINE && kinds.has(nativeEffectItem(itemID) ? effect.effectCategory : effectCategory(effectID))) {
           found.push(itemID);
           break;
         }
@@ -1469,7 +1519,7 @@ function createPilotDogma({
     const found = [];
     for (const [itemID, item] of identity) {
       if (typeof itemID !== "number" || item.locationID !== ship) continue;
-      if (effects.get(itemID)?.get(EFFECT_ONLINE)?.isActive) found.push([item.flagID, itemID]);
+      if (effectNow(itemID, EFFECT_ONLINE)?.isActive) found.push([item.flagID, itemID]);
     }
     return found;
   }
@@ -1493,7 +1543,7 @@ function createPilotDogma({
     weaponBanks,
     rackHeat,
     /** What is known of one effect on one item, or null. */
-    effect: (itemID, effectID) => effects.get(key(itemID))?.get(effectID) ?? null,
+    effect: effectNow,
     feed,
     loadAllInfo,
     processAllInfo,
@@ -1661,7 +1711,7 @@ function createPilotDogma({
       // attribute/effect reader below still retains only character scope.
       const { dropped } = primeInventory.purge([characterID, keepShipID].filter(id => id !== null), freshness);
       numericValues.drop(dropped, freshness);
-      numericEffects?.drop(dropped);
+      numericEffects?.drop(dropped, freshness);
       for (const [id, racks] of heat) for (const heatID of racks.keys()) updateHeat(id, heatID, now());
       const mine = characterID === null ? null : key(characterID);
       const kept = new Set();
@@ -1686,7 +1736,7 @@ function createPilotDogma({
       rows.clear();
       primeInventory.clear(freshness);
       numericValues.clear(freshness);
-      numericEffects?.clear();
+      numericEffects?.clear(freshness);
       banks.clear();
       characterPrimed = false;
       });

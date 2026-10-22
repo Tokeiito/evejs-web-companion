@@ -11,7 +11,27 @@ const bool = value => value === null ? null : Boolean(value);
 // Ordinary effect duration/repeat values fit their signed 32-bit columns.
 const integer = value => value === null ? null : typeof value === "boolean" || typeof value === "bigint" ? Number(value) : value;
 
-function createGodmaNumericEffects({ data, fieldsOf, number, key, onActivated = () => {}, afterState = () => {} }) {
+function createGodmaNumericEffects({ data, fieldsOf, number, key, nativeStore = null, onActivated = () => {}, afterState = () => {} }) {
+  if (nativeStore) {
+    const backend = scope => {
+      const store = nativeStore.get();
+      if (!store) throw new Error("Original Godma effect rows are unprepared.");
+      return store.forManager(scope ?? nativeStore.capture());
+    };
+    const callbacks = { onActivated, afterState };
+    return {
+      refresh: async (itemID, typeID, info, doUpdate, options = {}) => backend(options.scope).refresh(options.item, options.type, info, doUpdate, callbacks, options),
+      apply: async (args, options = {}) => backend(options.scope).apply(args, callbacks, options),
+      has: (item, scope) => nativeStore.get() ? backend(scope).has(item) : false,
+      get: (item, name, scope) => nativeStore.get() ? backend(scope).get(item, name) : null,
+      byID: (item, id, scope) => nativeStore.get() ? backend(scope).byID(item, id) : null,
+      entries: (item, scope) => nativeStore.get() ? backend(scope).entries(item) : [],
+      setActive: (item, id, active, scope) => backend(scope).setActive(item, id, active),
+      defaultEffect: (type, scope) => backend(scope).defaultEffect(type),
+      drop: (ids, scope) => backend(scope).drop(ids),
+      clear: scope => backend(scope).clear(),
+    };
+  }
   const effects = new Map();
 
   // Cached fields of OnGodmaShipEffect1441-1462. Activation is a local callback,

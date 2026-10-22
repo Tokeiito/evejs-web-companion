@@ -2125,6 +2125,96 @@ def _attach_godma_inventory_rows(owner):
     return result
 
 
+def _attach_godma_effect_rows(owner):
+    # Named source port of RefreshItemEffects1647-1682 and the cached-row
+    # prefix of OnGodmaShipEffect1448-1459. The original service scatter,
+    # control gate, tasklet/ActualStopEffect and overload tail remain external;
+    # never replace the original handler with a collector or fake services.
+    import types
+    existing = getattr(owner, 'effect_rows', None)
+    if existing is not None:
+        return existing
+    namespace = type(owner.instance).__dict__['__init__'].func_globals
+    rows = owner.rowset_types.rows
+    KeyVal = owner.constants_owner.modules['utillib'].KeyVal
+    result = types.ModuleType('companion.godma_effect_rows')
+
+    def new_dict():
+        return {}
+
+    def new_list():
+        return []
+
+    def new_info():
+        return KeyVal()
+
+    def refresh_rows(manager, item, type_id, info, do_update):
+        data, const = owner.manager_data.data, namespace['const']
+        eff_lines, event_lines = [], []
+        active = info.activeEffects
+        for relation in data.get_type_effects(type_id):
+            effect_id = relation.effectID
+            effect = data.get_effect(effect_id)
+            categories = (const.dgmEffActivation, const.dgmEffTarget, const.dgmEffArea, const.dgmEffOverload)
+            if (relation.isDefault and effect_id != const.effectSkillEffect or
+                    effect_id in manager.requiredEffects or effect.effectCategory in categories or
+                    effect.fittingUsageChanceAttributeID is not None):
+                line = rows.Row(manager.__effectheader__, [
+                    item, effect.effectID, effect.effectName, effect.effectCategory,
+                    relation.isDefault, effect_id in active, effect.isOffensive, effect.isAssistance,
+                    data.get_effect_description(effect.effectID), effect.trackingSpeedAttributeID,
+                    effect.rangeAttributeID, effect.falloffAttributeID, effect.dischargeAttributeID,
+                    effect.durationAttributeID, effect.iconID, None, None, None, None, False])
+                eff_lines.append(line)
+                manager.godma.LogInfo('RefreshItemEffects.effectsByItemEffect', item, effect_id, eff_lines[-1])
+                if effect_id in active and effect.effectCategory in categories and effect_id not in manager.requiredEffects:
+                    d = active[effect_id]
+                    env = d[:7]
+                    start_time, duration, repeat = d[7], d[8], d[9]
+                    event_lines.append((item, effect_id, info.time, True, True, env, start_time, duration, repeat, None))
+        if do_update and item in manager.effectsByItemEffect:
+            index = manager.effectsByItemEffect[item].header.Index('effectName')
+            for line in eff_lines:
+                manager.effectsByItemEffect[item][line[index]] = line
+        else:
+            manager.effectsByItemEffect[item] = namespace['godmarowset'].GodmaRowset(
+                manager.__effectheader__, eff_lines, rowClass=manager.GetEffectWrapper).Index('effectName')
+        return event_lines
+
+    def apply_fields(manager, args):
+        item, effect_id, t, start, active, environment, start_time, duration, repeat = args[:9]
+        effect = owner.manager_data.data.get_effect(effect_id)
+        name = effect.effectName
+        if item in manager.effectsByItemEffect and name in manager.effectsByItemEffect[item]:
+            manager.godma.LogInfo('OnGodmaShipEffect.effectsByItemEffect', item, name, active, duration, repeat)
+            manager.effectsByItemEffect[item][name].isDeactivating = False
+            manager.effectsByItemEffect[item][name].isActive = active
+            manager.effectsByItemEffect[item][name].startTime = start_time
+            manager.effectsByItemEffect[item][name].duration = duration
+            manager.effectsByItemEffect[item][name].repeat = repeat
+            manager.effectsByItemEffect[item][name].targetID = environment[3]
+            return (effect, bool(active))
+        return None
+
+    def raw_effect(manager, item, name):
+        return dict.__getitem__(manager.effectsByItemEffect[item], name)
+
+    def native_keys(container):
+        return container.keys()
+
+    def drop(manager, item):
+        try:
+            del manager.effectsByItemEffect[item]
+        except KeyError:
+            pass
+
+    result.new_dict, result.new_list, result.new_info = new_dict, new_list, new_info
+    result.refresh_rows, result.apply_fields = refresh_rows, apply_fields
+    result.raw_effect, result.native_keys, result.drop = raw_effect, native_keys, drop
+    owner.effect_rows = result
+    return result
+
+
 def _attach_godma_numeric_values(owner):
     # Actual original-manager dictionaries/lists, never a second value/kind
     # registry. Refresh executes the untouched installed original method.
@@ -2287,7 +2377,7 @@ def _attach_godma_type_wrappers(owner, full_load):
         bindings['localization'] = localization
         code = source('dogma.data', '/packages/dogma/data.py')
         for name in ('get_attribute', 'get_attribute_data_type', 'get_attribute_display_name',
-                     'get_effect', 'get_type_effects'):
+                     'get_effect', 'get_type_effects', 'get_effect_description'):
             if name not in data.__dict__:
                 setattr(data, name, types.FunctionType(definition(code, name), data.__dict__))
         evetypes.GetLocalizedTypeName = full_load.localized.GetLocalizedTypeName
