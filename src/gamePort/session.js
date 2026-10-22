@@ -29,6 +29,7 @@
 const zlib = require("node:zlib");
 const crypto = require("node:crypto");
 const { marshalDecode, getDecodedNumberKind } = require("../gameProtocol/marshal");
+const { remoteObjectReference } = require("./objectReference");
 const { encodeClient, long } = require("./clientMarshal");
 const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
@@ -618,7 +619,8 @@ class GamePortSession {
    * (MachoBindObject). `call` is the call that made the Moniker bind,
    * [method, args, keywords], and rides along: the client sends
    * MachoBindObject(bindParams, (method, args, keywords)) and gets the object
-   * and the call's answer together. Returns {objectID, nodeID, result}.
+   * and the call's answer together. Also retains the actual decoded reference
+   * receipt, including its typed refID and optional public attributes.
    */
   async bind(service, bindParams, call = null) {
     const address = `${service}:${addressKey(bindParams)}`;
@@ -634,14 +636,15 @@ class GamePortSession {
       carried: call === null ? null : call[0],
     });
     const head = Array.isArray(reply) ? reply[0] : null;
+    const reference = remoteObjectReference(head);
     const pair = unwrapSubstream(head && typeof head === "object" && head.type === "substruct" ? head.value : head);
-    const objectID = Array.isArray(pair) ? text(pair[0]) : text(pair);
+    const objectID = reference?.objectID ?? (Array.isArray(pair) ? text(pair[0]) : text(pair));
     if (!objectID || !objectID.startsWith("N=")) {
       throw new GamePortError("BIND_FAILED", `${service} did not return a bound object.`, reply);
     }
     this.objectServices.set(objectID, service);
     this.objectCacheIdentities.set(objectID, this._cacheIdentity([service, bindParams]));
-    return { objectID, nodeID, result: Array.isArray(reply) ? reply[1] : null };
+    return { objectID, nodeID, reference, result: Array.isArray(reply) ? reply[1] : null };
   }
 
   /**

@@ -53,6 +53,7 @@
 
 const crypto = require("node:crypto");
 const { GamePortSession } = require("./session");
+const { remoteObjectReference } = require("./objectReference");
 const packets = require("./packets");
 const { connectTcp, gameEndpoint } = require("./tcp");
 const { longKeptToBridgeJson, notificationToBridgeJson, sessionChangeToBridgeJson, wireToBridgeJson } = require("./bridgeJson");
@@ -1064,29 +1065,11 @@ function argumentsToWire(value) {
 
 /**
  * The "N=node:id" of the first bound object in an answer, or null. A bound
- * object arrives as a substruct holding a substream of (id, timestamp), alone
+ * object arrives as a substruct holding (id, refID) or (id, pa, refID), alone
  * or inside the (object, result) pair a bind answers with.
  */
-function boundObjectID(value, depth = 0) {
-  if (depth > 8 || value === null || typeof value !== "object" || Buffer.isBuffer(value)) return null;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = boundObjectID(item, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-  if (value.type === "substruct" && value.value) {
-    const pair = value.value.type === "substream" ? value.value.value : value.value;
-    const id = Array.isArray(pair) ? pair[0] : null;
-    const name = Buffer.isBuffer(id) ? id.toString("utf8") : typeof id === "string" ? id : "";
-    if (name.startsWith("N=")) return name;
-  }
-  for (const inner of [value.value, value.items, value.args]) {
-    const found = boundObjectID(inner, depth + 1);
-    if (found) return found;
-  }
-  return null;
+function boundObjectID(value) {
+  return remoteObjectReference(value)?.objectID ?? null;
 }
 
 /** One field of a util.KeyVal, in bridge JSON. */
@@ -5810,7 +5793,7 @@ function createGamePortPilots({
   function checkedInventoryReceipt(entry, answer, policy) {
     const objectID = answeredObject(entry.session, "invbroker", answer);
     if (objectID && policy) {
-      const scope = policy.receipt(objectID);
+      const scope = policy.receipt(objectID, remoteObjectReference(answer));
       entry.session.setObjectSessionCheck(objectID, scope.check);
     }
     return objectID;

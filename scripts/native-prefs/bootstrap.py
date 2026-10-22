@@ -2168,8 +2168,11 @@ def _attach_inventory_session_checks(owner):
     def new_policy():
         return {}
 
-    def receipt(session, policy, object_id):
-        return KeyVal(session=session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id)
+    def receipt(session, policy, object_id, ref_id):
+        # Selected check-record ingress, not MachoObjectConnection creation or
+        # registration. Preserve the server's actual typed reference ID now;
+        # real constructor/weak-registry/release ownership follows separately.
+        return KeyVal(session=session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id)
 
     def perform_in_context(context, record):
         if record.session is not context.session:
