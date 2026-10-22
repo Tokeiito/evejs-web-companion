@@ -22,7 +22,7 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
           current();
           if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual returned inventory object is required.");
           if (reference?.objectID !== objectID || !reference.source || !reference.pair || !reference.refID) throw new TypeError("The actual decoded inventory reference receipt is required.");
-          const record = module.getAttr("receipt").call(context.session, policy, Buffer.from(objectID, "utf8"), nativeSessionScalar(runtime, reference.refID));
+          const record = module.getAttr("receipt").call(context.module, policy, Buffer.from(objectID, "utf8"), nativeSessionScalar(runtime, reference.refID));
           // The dispatch callback retains this receipt owner, including its
           // actual public-attribute object, rather than only an N= string.
           const scope = { record, reference, check() { current(); return module.getAttr("perform_in_context").call(context.module, scope.record); } };

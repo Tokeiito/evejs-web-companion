@@ -368,12 +368,15 @@ class GamePortSession {
     // provenance before copying values out of their decoded parent slots.
     this.sessionAttributeRecords = new Map();
     this.sessionAttributeRevision = 0;
+    // Admission to ConnectToServer after the separate status/QC exchange.
+    // This is an ingress revision, not machoNet's native clientSessionID.
+    this.connectAttemptRevision = 0;
     /** Server clock minus ours, in milliseconds, from the last clock sync. */
     this.clockOffsetMs = 0;
     this.lastSentAt = this.now();
     this.counters = { sent: 0, received: 0, compressedSent: 0, compressedReceived: 0, unknownPackets: 0 };
 
-    this.listeners = { notification: new Set(), sessionChange: new Set(), sessionAttributes: new Set(), close: new Set(), packet: new Set(), clientCall: new Set() };
+    this.listeners = { notification: new Set(), sessionChange: new Set(), sessionAttributes: new Set(), connectAttempt: new Set(), close: new Set(), packet: new Set(), clientCall: new Set() };
     this.backgroundTimers = new Set();
 
     transport.onFrame = (payload) => this._onFrame(payload);
@@ -391,11 +394,13 @@ class GamePortSession {
   onSessionChange(listener) { return this._listen("sessionChange", listener); }
   /** Typed raw attribute ingress, including the login snapshot; before public change listeners. */
   onSessionAttributeUpdate(listener) { return this._listen("sessionAttributes", listener); }
+  /** Synchronous native-owner ingress before actual login authentication. */
+  onConnectAttempt(listener) { return this._listen("connectAttempt", listener); }
   readSessionAttribute(name) {
     return this.sessionAttributeRecords.get(name) ?? Object.freeze({ present: false });
   }
   sessionLifecycle() {
-    return Object.freeze({ closed: this.closed, loggedIn: this.loggedIn, revision: this.sessionAttributeRevision });
+    return Object.freeze({ closed: this.closed, loggedIn: this.loggedIn, revision: this.sessionAttributeRevision, connectAttemptRevision: this.connectAttemptRevision });
   }
   _captureSessionAttribute(name, container, slot, source) {
     const record = Object.freeze({
@@ -445,6 +450,13 @@ class GamePortSession {
     await this._exchangeVersions();
     this._writeRaw([null, "QC"]);
     this.logonQueuePosition = integer(await this._readRaw());
+
+    // machoNet.ConnectToServer1565: increment the client-local epoch after
+    // GetServerStatus/QC, before Authenticate's second exchange/VK. Its native
+    // owner performs the actual Python increment. Critical ingress failures
+    // must propagate, unlike optional diagnostic/event listeners in _emit.
+    const attempt = Object.freeze({ revision: ++this.connectAttemptRevision });
+    for (const listener of [...this.listeners.connectAttempt]) listener(attempt);
 
     await this._exchangeVersions();
     // The name comes from the login screen's edit box, so it is a unicode

@@ -781,6 +781,28 @@ def _create_effective_session_context(preferences, boot):
     mask = type('MasqueradeMask', (object,), types.FunctionType(definition(source, 'MasqueradeMask'), namespace)())
     namespace['MasqueradeMask'] = mask
 
+    # MachoNetService's selected LOCAL identity field/getter, not its service,
+    # transport/authenticating/queue/dirty-session or reconnect lifecycle.
+    # A newly constructed companion client owner owns this counter; replacing
+    # only a socket must not construct another identity owner and reset it.
+    macho_source = module_code('carbon.common.script.net.machoNet', '/carbon/common/script/net/machoNet.py')
+    macho_class = definition(macho_source, 'MachoNetService')
+    connection_namespace = {'__name__': 'carbon.common.script.net.machoNet', '__builtins__': __builtin__.__dict__,
+                            'macho': mode, 'session': result.session}
+    connection = type('ClientConnectionIdentityFields', (object,), {
+        '__module__': 'companion.client_connection_fields',
+        'GetClientSessionID': types.FunctionType(definition(macho_class, 'GetClientSessionID'), connection_namespace)})()
+    connection.clientSessionID = 0  # Original client-only constructor literal, machoNet462.
+
+    def begin_connect_attempt():
+        # Named source port of ConnectToServer1565, before dirty validation and
+        # second compatibility/auth exchange. Keep native PyInt += literal1,
+        # including actual Python2 promotion; never import a transport ID.
+        result.assert_entry()
+        connection.clientSessionID += 1
+
+    result.connection_fields, result.begin_connect_attempt = connection, begin_connect_attempt
+
     def run_masked(callback, arguments=(), props=None):
         # One embedding entry owns the entire ORIGINAL mask/callback/unmask.
         # No mask spans a JS await or a different Stackless current tasklet.
@@ -2168,16 +2190,25 @@ def _attach_inventory_session_checks(owner):
     def new_policy():
         return {}
 
-    def receipt(session, policy, object_id, ref_id):
+    def receipt(context, policy, object_id, ref_id):
         # Selected check-record ingress, not MachoObjectConnection creation or
         # registration. Preserve the server's actual typed reference ID now;
         # real constructor/weak-registry/release ownership follows separately.
-        return KeyVal(session=session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id)
+        clisid = context.run_masked(context.connection_fields.GetClientSessionID)
+        return KeyVal(session=context.session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id, clisid=clisid)
+
+    def check_current(context, record):
+        # Original getter's PerformSessionCheck precedes the call wrapper's
+        # current-client check (ObjectCallGPCS586-625). This remains a selected
+        # check record, not a fabricated native connection or synchronous RPC.
+        perform(record)
+        if context.connection_fields.GetClientSessionID() != record.clisid:
+            raise RuntimeError('This object was acquired by a different session')
 
     def perform_in_context(context, record):
         if record.session is not context.session:
             raise ValueError('Inventory checks must use their actual native session owner')
-        return context.run_masked(perform, (record,))
+        return context.run_masked(check_current, (context, record))
 
     result.new_policy, result.receipt, result.perform = new_policy, receipt, perform
     result.perform_in_context = perform_in_context

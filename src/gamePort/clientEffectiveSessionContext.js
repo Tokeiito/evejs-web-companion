@@ -18,10 +18,10 @@ async function createClientSessionOwners({ provider, session, clientRoot }) {
  * Original Masquerade/UnMask stays within one synchronous native callback entry.
  */
 async function createClientEffectiveSessionContext({ provider, session, preferences, boot }) {
-  if (!provider || typeof provider.ready !== "function" || !preferences?.handler || !boot || !session || typeof session.onSessionAttributeUpdate !== "function" || typeof session.sessionLifecycle !== "function" || typeof session.onClose !== "function") throw new TypeError("Actual runtime, transport, preferences and installed boot are required.");
+  if (!provider || typeof provider.ready !== "function" || !preferences?.handler || !boot || !session || typeof session.onSessionAttributeUpdate !== "function" || typeof session.onConnectAttempt !== "function" || typeof session.sessionLifecycle !== "function" || typeof session.onClose !== "function") throw new TypeError("Actual runtime, transport, preferences and installed boot are required.");
   const before = session.sessionLifecycle();
-  if (before.closed || before.loggedIn || before.revision !== 0) throw new Error("Effective session fields must be bound before any login ingress.");
-  let runtime = null, module = null, failure = null, retired = false, revision = 0;
+  if (before.closed || before.loggedIn || before.revision !== 0 || before.connectAttemptRevision !== 0) throw new Error("Effective session fields must be bound before any login ingress.");
+  let runtime = null, module = null, failure = null, retired = false, revision = 0, connectRevision = 0;
   const queued = [];
   function refresh() {
     if (!module) return;
@@ -31,6 +31,12 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
   function apply(batch) {
     if (failure) throw failure;
     if (retired || session.sessionLifecycle().closed) throw new Error("Effective session ingress cannot republish a retired owner.");
+    if (batch.source === "connect-attempt") {
+      if (batch.revision !== connectRevision + 1) throw new Error("Native connection attempts require ordered actual transport ingress.");
+      module.getAttr("begin_connect_attempt").call();
+      connectRevision = batch.revision;
+      return;
+    }
     if (batch.revision <= revision || !Array.isArray(batch.records)) throw new Error("Effective session ingress is missing its ordered typed batch.");
     // machoNet.ConnectToServer only consumes session_init.userid for transport
     // association. SessionChangeGPCS applies actual initial/change packets.
@@ -53,7 +59,13 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
     catch (error) { failure = error; session.close(); }
   }
   const forgetChanges = session.onSessionAttributeUpdate(changed);
-  const forgetClose = session.onClose(() => { retired = true; try { refresh(); } finally { forgetChanges(); } });
+  const forgetAttempts = session.onConnectAttempt(attempt => {
+    const batch = Object.freeze({ source: "connect-attempt", revision: attempt.revision });
+    if (!module) { queued.push(batch); return; }
+    try { apply(batch); }
+    catch (error) { failure = error; session.close(); throw error; }
+  });
+  const forgetClose = session.onClose(() => { retired = true; try { refresh(); } finally { forgetChanges(); forgetAttempts(); } });
   try {
     runtime = await provider.ready();
     module = runtime.values.global("_create_effective_session_context").call(preferences.handler, boot);
@@ -63,13 +75,14 @@ async function createClientEffectiveSessionContext({ provider, session, preferen
     return Object.freeze({
       module, localstorage: module.getAttr("localstorage"), builtins: module.getAttr("builtins"),
       session: module.getAttr("session"), fields: module.getAttr("fields"), transport: session,
+      connectionFields: module.getAttr("connection_fields"),
       preferences, boot, identity: runtime.identity,
-      lifecycle: () => Object.freeze({ revision, retired, failed: failure !== null }),
+      lifecycle: () => Object.freeze({ revision, connectRevision, retired, failed: failure !== null }),
       assertCurrent() { if (failure) throw failure; module.getAttr("assert_entry").call(); },
       refresh,
-      retire() { retired = true; refresh(); forgetChanges(); forgetClose(); },
+      retire() { retired = true; refresh(); forgetChanges(); forgetAttempts(); forgetClose(); },
     });
-  } catch (error) { retired = true; refresh(); forgetChanges(); forgetClose(); throw error; }
+  } catch (error) { retired = true; refresh(); forgetChanges(); forgetAttempts(); forgetClose(); throw error; }
 }
 
 module.exports = { createClientEffectiveSessionContext, createClientSessionOwners };
