@@ -3,6 +3,7 @@
 const { nativeSessionScalar } = require("./clientSessionContext");
 const { projectNativeNodeAddress } = require("./clientMachoAddress");
 const { getDecodedNumberKind } = require("../gameProtocol/marshal");
+const { long } = require("./clientMarshal");
 
 /** Original native inventory connections, owned by actual receipt holders.
  * The session registry is weak; neither it nor a per-N callback roots them.
@@ -11,6 +12,35 @@ const { getDecodedNumberKind } = require("../gameProtocol/marshal");
 function createClientInventorySessionChecks({ runtime, module, context, assertCurrent }) {
   const receipts = new WeakMap(), publicValues = new WeakMap(), publicFailures = new WeakMap(), converting = new WeakSet();
   function current() { assertCurrent(); context.assertCurrent(); }
+  function receipt(objectID, reference) {
+    current();
+    if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual returned inventory object is required.");
+    if (reference?.objectID !== objectID || !reference.source || !reference.pair || !reference.refID) throw new TypeError("The actual decoded inventory reference receipt is required.");
+    let record = receipts.get(reference);
+    if (!record) {
+      const pa = reference.hasPublicAttributes ? publicValue(reference.publicAttributes) : module.getAttr("new_policy").call();
+      record = module.getAttr("receipt").call(context.module, Buffer.from(objectID, "utf8"), pa, nativeSessionScalar(runtime, reference.refID));
+      receipts.set(reference, record);
+    }
+    return record;
+  }
+  function project(value) {
+    if (value.kind === "int") return value.scalar;
+    if (value.kind === "long") return long(value.scalar);
+    if (value.kind === "str") return value.scalar;
+    if (value.kind === "NoneType") return null;
+    if (value.getAttr("__class__").getAttr("__name__").scalar.toString() === "tuple") {
+      return Array.from({ length: Number(value.getAttr("__len__").call().scalar) }, (_, index) => project(value.getItem(BigInt(index))));
+    }
+    throw new TypeError("The native manager identity has no prepared wire projection.");
+  }
+  function dispatch(record) {
+    module.getAttr("perform_in_context").call(context.module, record);
+    const destination = record.getAttr("destination");
+    return { cacheIdentity: project(record.getAttr("persistantObjectID")), prepareDestination() {
+      return projectNativeNodeAddress(destination);
+    } };
+  }
   function publicValue(value, kind) {
     if (value && typeof value === "object" && !Buffer.isBuffer(value) && value.type !== "wstring") {
       const failed = publicFailures.get(value);
@@ -39,6 +69,32 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
     return nativeSessionScalar(runtime, { value, kind });
   }
   return Object.freeze({
+    manager(which) {
+      current();
+      const moniker = module.getAttr("manager").call(Buffer.from(which));
+      const params = project(moniker.getAttr("_Moniker__bindParams"));
+      return Object.freeze({
+        moniker, params,
+        check() { current(); return module.getAttr("check_manager").call(moniker); },
+        resolved(nodeRecord) {
+          current();
+          if (!nodeRecord?.kind) throw new TypeError("The manager requires its actual typed node-resolution result.");
+          module.getAttr("resolve_manager").call(moniker, nativeSessionScalar(runtime, nodeRecord));
+        },
+        publish(objectID, reference) {
+          const record = receipt(objectID, reference);
+          module.getAttr("publish_manager").call(moniker, record);
+          return Object.freeze({
+            objectID, moniker, record, reference,
+            dispatch() {
+              current();
+              module.getAttr("check_manager").call(moniker);
+              return dispatch(record);
+            },
+          });
+        },
+      });
+    },
     capture(names) {
       current();
       const policy = module.getAttr("new_policy").call();
@@ -49,15 +105,7 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
       return Object.freeze({
         policy,
         receipt(objectID, reference) {
-          current();
-          if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual returned inventory object is required.");
-          if (reference?.objectID !== objectID || !reference.source || !reference.pair || !reference.refID) throw new TypeError("The actual decoded inventory reference receipt is required.");
-          let record = receipts.get(reference);
-          if (!record) {
-            const pa = reference.hasPublicAttributes ? publicValue(reference.publicAttributes) : module.getAttr("new_policy").call();
-            record = module.getAttr("receipt").call(context.module, Buffer.from(objectID, "utf8"), pa, nativeSessionScalar(runtime, reference.refID));
-            receipts.set(reference, record);
-          }
+          const record = receipt(objectID, reference);
           record.getAttr("SetSessionCheck").call(policy);
           // The dispatch callback retains this receipt owner, including its
           // actual public-attribute object, rather than only an N= string.
@@ -70,7 +118,7 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
               // is serialized only on a real send, after cache/throttle waits;
               // replacing the record's field cannot retarget this invocation.
               const destination = scope.record.getAttr("destination");
-              return { prepareDestination() {
+              return { cacheIdentity: project(scope.record.getAttr("persistantObjectID")), prepareDestination() {
                 return projectNativeNodeAddress(destination);
               } };
             },

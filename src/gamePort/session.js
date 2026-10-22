@@ -30,6 +30,7 @@ const zlib = require("node:zlib");
 const crypto = require("node:crypto");
 const { marshalDecode, getDecodedNumberKind } = require("../gameProtocol/marshal");
 const { remoteObjectReference } = require("./objectReference");
+const { attributePythonType } = require("./clientDogmaArithmetic");
 const { encodeClient, long } = require("./clientMarshal");
 const {
   TYPE, anyAddress, buildPacket, clientAddress, dictGet, integer, nodeAddress, parsePacket, text, unwrapSubstream,
@@ -108,7 +109,7 @@ function callKey(target, method, args, written) {
   return JSON.stringify([target, method, args, keywords], (name, value) => (typeof value === "bigint" ? { long: String(value) } : value));
 }
 /** A bind's parameters as a name for the address: a number however it is held, or the numbers of a tuple. */
-const addressKey = (value) => (Array.isArray(value) ? `(${value.map(addressKey).join(",")})` : String(value));
+const addressKey = (value) => (Array.isArray(value) ? `(${value.map(addressKey).join(",")})` : String(value?.type === "long" ? value.value : value));
 /**
  * The call a bind carries, as the client's Moniker hands it over: (method, args, keywords), the keywords a dict of
  * their own in the order moniker.py leaves them in, and never None.
@@ -333,6 +334,7 @@ class GamePortSession {
     this.nextCallID = 1;
     /** machoNet's address cache: "service:bindParams" -> the node that address was said to live on. */
     this.nodeOfAddress = new Map();
+    this.nodeOfAddressRecords = new Map();
     /** The calls that are out now, by what makes each the call it is (callKey), each with the answer awaited. */
     this.callsOut = new Map();
     /** The service each bound object was bound for, by its "N=node:id": what a call on it is counted under (onSent). */
@@ -618,7 +620,9 @@ class GamePortSession {
    * naming its node says so (moniker.py __setstate__).
    */
   setNodeOfAddress(service, bindParams, nodeID) {
-    this.nodeOfAddress.set(`${service}:${addressKey(bindParams)}`, nodeID);
+    const address = `${service}:${addressKey(bindParams)}`;
+    this.nodeOfAddress.set(address, nodeID);
+    this.nodeOfAddressRecords.delete(address);
   }
 
   /**
@@ -631,7 +635,7 @@ class GamePortSession {
    * and the call's answer together. Also retains the actual decoded reference
    * receipt, including its typed refID and optional public attributes.
    */
-  async bind(service, bindParams, call = null) {
+  async bind(service, bindParams, call = null, beforeBind = undefined) {
     const address = `${service}:${addressKey(bindParams)}`;
     let nodeID = this.nodeOfAddress.get(address) ?? null;
     if (nodeID === null) {
@@ -640,8 +644,12 @@ class GamePortSession {
       if (nodeID === null) throw new GamePortError("RESOLVE_FAILED", `${service} could not say where its object lives.`);
       this.nodeOfAddress.set(address, nodeID);
     }
+    const nodeRecord = this.nodeOfAddressRecords.get(address);
+    beforeBind?.(nodeRecord);
+    const bindNode = nodeRecord?.kind
+      ? attributePythonType(nodeRecord) === "long" ? long(nodeRecord.value) : nodeRecord.value : nodeID;
     const reply = await this._call({
-      destination: nodeAddress(nodeID, service), boundObject: null, service, method: "MachoBindObject", args: [bindParams, call === null ? null : carriedCall(call)], kwargs: null,
+      destination: nodeAddress(bindNode, service), boundObject: null, service, method: "MachoBindObject", args: [bindParams, call === null ? null : carriedCall(call)], kwargs: null,
       carried: call === null ? null : call[0],
     });
     const head = Array.isArray(reply) ? reply[0] : null;
@@ -653,7 +661,7 @@ class GamePortSession {
     }
     this.objectServices.set(objectID, service);
     this.objectCacheIdentities.set(objectID, this._cacheIdentity([service, bindParams]));
-    return { objectID, nodeID, reference, result: Array.isArray(reply) ? reply[1] : null };
+    return { objectID, nodeID, nodeRecord, reference, result: Array.isArray(reply) ? reply[1] : null };
   }
 
   /**
@@ -680,7 +688,9 @@ class GamePortSession {
       if (!nodeID.trim()) throw new TypeError("The remote object has no node ID.");
       destination = nodeAddress(long(BigInt(nodeID)));
     }
-    return this._cachedCall({ destination, prepareDestination, boundObject: objectID, service: null, method, args, kwargs }, this.objectCacheIdentities.get(objectID) ?? objectID);
+    const cacheIdentity = dispatch && Object.hasOwn(dispatch, "cacheIdentity")
+      ? this._cacheIdentity(dispatch.cacheIdentity) : this.objectCacheIdentities.get(objectID) ?? objectID;
+    return this._cachedCall({ destination, prepareDestination, cacheIdentity, boundObject: objectID, service: null, method, args, kwargs }, cacheIdentity);
   }
 
   /** ObjectCallGPCS blocking=-1, MachoTransport.Write even-command source.
@@ -743,7 +753,7 @@ class GamePortSession {
   }
 
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, prepareDestination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch, signal }, written) {
+  _makeCall({ destination, prepareDestination, cacheIdentity, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch, signal }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
@@ -776,6 +786,7 @@ class GamePortSession {
     let abort;
     const answered = new Promise((resolve, reject) => {
       const waiter = { label: `${service ?? boundObject}.${method}`, resolve, reject, timer: undefined };
+      if (boundObject === null && method === "MachoResolveObject" && args.length === 1) waiter.resolveAddress = `${service}:${addressKey(args[0])}`;
       this.pending.set(callID, waiter);
       this._waitFor(callID, waiter, this.callTimeoutMs);
       if (signal) {
@@ -800,7 +811,7 @@ class GamePortSession {
     });
     return answered.then((result) => {
       if (signal?.aborted) throw new GamePortError("CALL_RETIRED", "The calling tasklet has retired.");
-      return this._answered({ boundObject, service, method, args }, result);
+      return this._answered({ boundObject, service, method, args, cacheIdentity }, result);
     }).finally(() => { if (abort) signal.removeEventListener("abort", abort); });
   }
 
@@ -816,10 +827,10 @@ class GamePortSession {
   }
 
   /** What a call answers its caller: the result opened and cached under its service or persistent object identity. */
-  async _answered({ boundObject, service, method, args }, value) {
+  async _answered({ boundObject, service, method, args, cacheIdentity }, value) {
     const state = stateOfClass(value, "objectCaching.CachedMethodCallResult");
     const result = await this._unwrapCachedResult(value);
-    if (state) this._cacheMethodCall(boundObject === null ? service : this.objectCacheIdentities.get(boundObject) ?? boundObject, method, args, state, result);
+    if (state) this._cacheMethodCall(boundObject === null ? service : cacheIdentity ?? this.objectCacheIdentities.get(boundObject) ?? boundObject, method, args, state, result);
     return result;
   }
 
@@ -1258,7 +1269,15 @@ class GamePortSession {
       waiter.reject(error);
       return;
     }
-    waiter.resolve(unwrapSubstream(packet.body[0]));
+    const source = packet.body[0], value = unwrapSubstream(source);
+    if (waiter.resolveAddress) {
+      // Preserve the actual primitive and its source numeric class before
+      // unwrapping discards the substream parent. Shared callers see this same
+      // address-cache record; no extra Resolve RPC or per-number interning.
+      const kind = source?.type === "substream" ? getDecodedNumberKind(source, "value") : getDecodedNumberKind(packet.body, 0);
+      this.nodeOfAddressRecords.set(waiter.resolveAddress, Object.freeze({ value, kind, source }));
+    }
+    waiter.resolve(value);
   }
 
   /**

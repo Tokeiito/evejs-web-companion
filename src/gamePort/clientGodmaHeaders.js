@@ -33,6 +33,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
     return Buffer.from(name, "ascii");
   }
   let rowsets = null;
+  let definitionPreparation = null;
   let managerPreparation = null;
   let managerDataPreparation = null;
   let typeWrapperPreparation = null;
@@ -42,12 +43,20 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
   let inventoryRowsPreparation = null;
   let effectRowsPreparation = null;
   let inventoryCheckPreparation = null;
-  function prepareStateManager() {
+  function prepareDefinitions() {
     assertCurrent();
-    return managerPreparation ??= (async () => {
+    return definitionPreparation ??= (async () => {
       const types = await (rowsets ??= createClientGodmaRowsets({ provider, godmaModule: module, inventoryHeader }));
       assertCurrent();
       const constantsOwner = runtime.values.global("_prepare_godma_state_manager").call(module, types.module);
+      return Object.freeze({ types, constantsOwner });
+    })();
+  }
+  function prepareStateManager() {
+    assertCurrent();
+    return managerPreparation ??= (async () => {
+      const { types, constantsOwner } = await prepareDefinitions();
+      assertCurrent();
       // Explicit async preparation, separate from native cold tasklet/RPC
       // publication. The original lazy call still owns the manager slot.
       if (module.getAttr("needs_remote").call(Buffer.from("itemrd")).truth()) {
@@ -85,7 +94,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
     prepareInventorySessionChecks() {
       assertCurrent();
       return inventoryCheckPreparation ??= (async () => {
-        await prepareStateManager();
+        await prepareDefinitions();
         assertCurrent();
         const checks = runtime.values.global("_attach_inventory_session_checks").call(module, context.module);
         return createClientInventorySessionChecks({ runtime, module: checks, context, assertCurrent });

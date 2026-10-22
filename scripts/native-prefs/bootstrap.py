@@ -2323,6 +2323,56 @@ def _attach_inventory_session_checks(owner, context):
     result.new_policy, result.receipt, result.perform = new_policy, receipt, perform
     result.wire_tuple, result.new_list = wire_tuple, new_list
     result.perform_in_context = perform_in_context
+
+    # Original Moniker constructor/helpers, separate from its unprepared
+    # synchronous Bind/uthread/service scheduler. Its destructor needs the
+    # actual local ObjectConnection TYPE for isinstance, never its constructor
+    # or basesession's module-scope ObjectKillah tasklet.
+    session_source = zipimport.zipimporter(_archive + '/carbon/common/script/sys').get_code('carbon.common.script.sys.basesession')
+    local_connection = types.ClassType('ObjectConnection', (), types.FunctionType(definition(session_source, 'ObjectConnection'), session_globals)())
+    local_type_owner = types.ModuleType('companion.local_object_connection_type')
+    local_type_owner.ObjectConnection = local_connection
+    moniker_source = module_code('moniker')
+    moniker_namespace = {'__name__': 'carbon.common.script.net.moniker', '__builtins__': __builtins__,
+                         'allMonikers': weakref.WeakSet(), 'basesession': local_type_owner,
+                         'session': context.session, 'log': godma_globals['log']}
+    moniker_type = types.ClassType('Moniker', (), types.FunctionType(definition(moniker_source, 'Moniker'), moniker_namespace)())
+    moniker_namespace['Moniker'] = moniker_type
+    moniker_namespace['MonikerCallWrap'] = types.ClassType('MonikerCallWrap', (), types.FunctionType(definition(moniker_source, 'MonikerCallWrap'), moniker_namespace)())
+    eve_source = zipimport.zipimporter(_archive + '/eve/common/script/net').get_code('eve.common.script.net.eveMoniker')
+    if eve_source is None or not eve_source.co_filename.replace('\\', '/').endswith('/eve/common/script/net/eveMoniker.py'):
+        raise ImportError('Not the installed inventory Moniker helper source')
+    eve_namespace = {'__name__': 'eve.common.script.net.eveMoniker', '__builtins__': __builtins__,
+                     'Moniker': moniker_type, 'session': context.session, 'const': owner.constants_owner.appConst}
+    for name in ('GetSolarSystemInventoryMgr', 'GetStationInventoryMgr', 'GetInventoryMgr'):
+        eve_namespace[name] = types.FunctionType(definition(eve_source, name), eve_namespace)
+
+    def manager(which):
+        context.assert_entry()
+        if which == 'location':
+            return context.run_masked(eve_namespace['GetInventoryMgr'])
+        if which == 'station':
+            return context.run_masked(eve_namespace['GetStationInventoryMgr'], (context.fields.stationid,))
+        raise ValueError('Unknown inventory manager')
+
+    def check_manager(moniker):
+        return context.run_masked(moniker._Moniker__PerformSessionCheck)
+
+    def resolve_manager(moniker, node_id):
+        # Actual MachoResolveObject/typed address-cache result, not parsed N=.
+        moniker._Moniker__nodeID = node_id
+        check_manager(moniker)
+
+    def publish_manager(moniker, record):
+        # moniker.Bind144-145, AFTER ParseObjectID's original constructor and
+        # weak registration. No copied bind params or per-N identity owner.
+        moniker.boundObject = record
+        record.persistantObjectID = (moniker._Moniker__serviceName, moniker._Moniker__bindParams)
+
+    result.Moniker, result.ObjectConnection = moniker_type, local_connection
+    result.all_monikers, result.manager_helpers = moniker_namespace['allMonikers'], eve_namespace
+    result.manager, result.check_manager = manager, check_manager
+    result.resolve_manager, result.publish_manager = resolve_manager, publish_manager
     owner.inventory_session_checks = result
     return result
 

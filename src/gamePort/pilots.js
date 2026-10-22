@@ -5226,7 +5226,7 @@ function createGamePortPilots({
       if (object.objectID === objectID) entry.agents.set(agentID, { ...object, objectID: null });
     }
     for (const [which, held] of entry.inventoryManagers) {
-      if (held === objectID) entry.inventoryManagers.delete(which);
+      if ((typeof held === "string" ? held : held.objectID) === objectID) entry.inventoryManagers.delete(which);
     }
     for (const [service, held] of entry.monikers) {
       if (held === objectID) entry.monikers.delete(service);
@@ -5783,11 +5783,34 @@ function createGamePortPilots({
    * A call on invCache's `inventorymgr` (where the pilot is) or `stationInventoryMgr` (its station): each a Moniker it
    * keeps. The station's is only asked of a pilot docked in one, for whom the two are bound by the same parameters.
    */
-  const inventoryCall = (entry, which, method, args) => {
+  const inventoryCall = async (entry, which, method, args, kwargs = null) => {
     const version = entry.inventoryManagerVersion;
-    return keptCall(entry, entry.inventoryManagers, which, "invbroker", () => locationBindParams(entry), method, args, null, () => {
+    const dispatchCurrent = () => {
       if (entry.ended || entry.inventoryManagerVersion !== version) throw fail("SESSION_REQUEST_RETIRED", "This inventory manager binding belongs to the pilot's previous location.");
-    });
+    };
+    const key = `invbroker:${which}`, kept = entry.inventoryManagers;
+    while (!kept.has(which) && entry.binding.has(key)) await entry.binding.get(key).catch(() => {});
+    dispatchCurrent();
+    if (kept.has(which)) return entry.session.callBound(kept.get(which), method, args, kwargs);
+    // Register the ENTIRE pending operation before preparation can yield.
+    // Native ParseObjectID constructs/registers before publication; even a
+    // stale reply acquires its real owner and can then be released normally.
+    const binding = (async () => {
+      const native = await entry.dogma.createInventoryManager(which);
+      dispatchCurrent();
+      native?.check();
+      const bound = await entry.session.bind("invbroker", native?.params ?? locationBindParams(entry), [method, args, kwargs], record => {
+        dispatchCurrent();
+        native?.resolved(record);
+      });
+      const remote = native ? native.publish(bound.objectID, bound.reference) : bound.objectID;
+      dispatchCurrent();
+      kept.set(which, remote);
+      return bound;
+    })();
+    entry.binding.set(key, binding);
+    try { return (await binding).result; }
+    finally { if (entry.binding.get(key) === binding) entry.binding.delete(key); }
   };
 
   function checkedInventoryReceipt(entry, answer, policy) {
@@ -6044,7 +6067,7 @@ function createGamePortPilots({
     // and makes again only when the session's place changes (invCache.py 193 to 201), and the transport keeps it for
     // the client already: a call on it goes on that one, and not on a Moniker made for the handle.
     if (object.service === "invbroker") {
-      return keptCall(entry, entry.inventoryManagers, "location", "invbroker", () => locationBindParams(entry), method, args, kwargs);
+      return inventoryCall(entry, "location", method, args, kwargs);
     }
     if (madeAfresh(object.service, method, { dockedInStation: attribute(entry, "stationid") !== null })) {
       return entry.session.bind(object.service, object.params, [method, args, kwargs]).then((bound) => bound.result);
