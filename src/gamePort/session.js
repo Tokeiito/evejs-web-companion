@@ -676,10 +676,16 @@ class GamePortSession {
   }
 
   callBound(objectID, method, args = [], kwargs = null) {
-    this.objectSessionChecks.get(objectID)?.();
+    const dispatch = this.objectSessionChecks.get(objectID)?.();
     // ObjectCallGPCS: MachoAddress(nodeID=long(nid)), read out of the object's ID.
-    const nodeID = Number(String(objectID).slice(2).split(":")[0]);
-    return this._cachedCall({ destination: nodeAddress(long(nodeID)), boundObject: objectID, service: null, method, args, kwargs }, this.objectCacheIdentities.get(objectID) ?? objectID);
+    const prepareDestination = dispatch?.prepareDestination;
+    let destination = null;
+    if (!prepareDestination) {
+      const nodeID = String(objectID).slice(2).split(":")[0];
+      if (!nodeID.trim()) throw new TypeError("The remote object has no node ID.");
+      destination = nodeAddress(long(BigInt(nodeID)));
+    }
+    return this._cachedCall({ destination, prepareDestination, boundObject: objectID, service: null, method, args, kwargs }, this.objectCacheIdentities.get(objectID) ?? objectID);
   }
 
   /**
@@ -722,7 +728,7 @@ class GamePortSession {
   }
 
   /** The call itself: numbered, wrapped and sent, and its answer awaited. */
-  _makeCall({ destination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch, signal }, written) {
+  _makeCall({ destination, prepareDestination, boundObject, service, method, args, machoVersion = 1, carried = null, beforeDispatch, signal }, written) {
     if (!this.loggedIn || this.closed) {
       return Promise.reject(new GamePortError("NOT_CONNECTED", "The game connection is not logged in."));
     }
@@ -767,6 +773,7 @@ class GamePortSession {
         if (signal.aborted) { abort(); return; }
       }
       try {
+        if (prepareDestination) packet.args[2] = prepareDestination();
         this._writePacket(packet);
       } catch (error) {
         this.timers.clearTimeout(waiter.timer);

@@ -2164,14 +2164,30 @@ def _attach_godma_inventory_rows(owner):
     return result
 
 
-def _attach_inventory_session_checks(owner):
+def _attach_inventory_session_checks(owner, context):
     # Original remote-object policy applied to the actual transport receipt.
     # This is a check record, NOT a fabricated MachoObjectConnection or native
     # inventory container. Their constructor/session/RPC graph remains absent.
     import types
     existing = getattr(owner, 'inventory_session_checks', None)
     if existing is not None:
+        if existing.context is not context:
+            raise ValueError('Inventory checks must retain their actual native session context')
         return existing
+    context.assert_entry()
+
+    def module_code(name):
+        full_name = 'carbon.common.script.net.' + name
+        code = zipimport.zipimporter(_archive + '/carbon/common/script/net').get_code(full_name)
+        if code is None or not code.co_filename.replace('\\', '/').endswith('/carbon/common/script/net/' + name + '.py'):
+            raise ImportError('Not the installed native address dependency: ' + name)
+        return code
+
+    def definition(code, name):
+        matches = [v for v in code.co_consts if type(v) is types.CodeType and v.co_name == name]
+        if len(matches) != 1:
+            raise ImportError('Ambiguous installed native address definition: ' + name)
+        return matches[0]
     code = zipimport.zipimporter(_archive + '/carbon/common/script/net').get_code('carbon.common.script.net.ObjectCallGPCS')
     if code is None or not code.co_filename.replace('\\', '/').endswith('/carbon/common/script/net/ObjectCallGPCS.py'):
         raise ImportError('Not the installed remote object session-check source')
@@ -2186,6 +2202,20 @@ def _attach_inventory_session_checks(owner):
     perform = types.FunctionType(methods[0], namespace)
     KeyVal = owner.constants_owner.modules['utillib'].KeyVal
     result = types.ModuleType(namespace['__name__'])
+    # Execute genuine selected exception CLASS bodies; importing the whole GPS
+    # module would publish shared builtins and admit unrelated engine clocks.
+    exception_namespace = {'__name__': 'carbon.common.script.net.GPSExceptions', '__builtins__': __builtins__}
+    exception_source = module_code('GPSExceptions')
+    gps_exception = type('GPSException', (StandardError,), types.FunctionType(definition(exception_source, 'GPSException'), exception_namespace)())
+    exception_namespace['GPSException'] = gps_exception
+    bad_address = type('GPSBadAddress', (gps_exception,), types.FunctionType(definition(exception_source, 'GPSBadAddress'), exception_namespace)())
+    exception_namespace['GPSBadAddress'] = bad_address
+    session_globals = context.source_classes[0].__dict__['Masquerade'].func_globals
+    address_namespace = {'__name__': 'carbon.common.script.net.machoNetAddress', '__builtins__': __builtins__,
+                         'GPSBadAddress': bad_address, 'const': owner.constants_owner.modules['carbon.common.lib.const'],
+                         'log': godma_globals['log'], 'strx': session_globals['strx'], 'machobase': session_globals['machobase']}
+    address = types.ClassType('MachoAddress', (), types.FunctionType(definition(module_code('machoNetAddress'), 'MachoAddress'), address_namespace)())
+    result.context, result.MachoAddress, result.GPSBadAddress = context, address, bad_address
 
     def new_policy():
         return {}
@@ -2195,7 +2225,13 @@ def _attach_inventory_session_checks(owner):
         # registration. Preserve the server's actual typed reference ID now;
         # real constructor/weak-registry/release ownership follows separately.
         clisid = context.run_masked(context.connection_fields.GetClientSessionID)
-        return KeyVal(session=context.session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id, clisid=clisid)
+        # Original remote node branch518-526: parse the ACTUAL string in native
+        # Python, then run the untouched original address constructor. No JS
+        # Number rounding and no hand-built substitute for MachoAddress.
+        nid, oid = object_id.split(':')
+        nid = nid.split('=')[1]
+        destination = address(nodeID=long(nid))
+        return KeyVal(session=context.session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id, clisid=clisid, destination=destination)
 
     def check_current(context, record):
         # Original getter's PerformSessionCheck precedes the call wrapper's

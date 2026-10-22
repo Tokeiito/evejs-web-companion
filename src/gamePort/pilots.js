@@ -5794,7 +5794,7 @@ function createGamePortPilots({
     const objectID = answeredObject(entry.session, "invbroker", answer);
     if (objectID && policy) {
       const scope = policy.receipt(objectID, remoteObjectReference(answer));
-      entry.session.setObjectSessionCheck(objectID, scope.check);
+      entry.session.setObjectSessionCheck(objectID, scope.dispatch);
     }
     return objectID;
   }

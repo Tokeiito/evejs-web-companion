@@ -87,7 +87,7 @@ async function createClientGodmaHeaders({ provider, inventoryHeader }) {
       return inventoryCheckPreparation ??= (async () => {
         await prepareStateManager();
         assertCurrent();
-        const checks = runtime.values.global("_attach_inventory_session_checks").call(module);
+        const checks = runtime.values.global("_attach_inventory_session_checks").call(module, context.module);
         return createClientInventorySessionChecks({ runtime, module: checks, context, assertCurrent });
       })();
     },
