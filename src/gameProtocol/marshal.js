@@ -1,5 +1,5 @@
 // VENDORED from the eve.js server (server/src/network/tcp/utils/marshal.js at
-// eve.js 062b2a2e1, AGPL-3.0-only, same developers), unchanged except for the
+// eve.js e5eb5c7d9, AGPL-3.0-only, same developers), unchanged except for the
 // string-table path. It is the codec the game port itself speaks;
 // src/gameClient.js uses it to talk to the server the way the retail client
 // does. Do not edit it: re-copy with `npm run vendor:marshal -- --write`.
@@ -1349,7 +1349,8 @@ function decodeMarshalStream(buffer, requireExactEnd, options, onRootKind) {
   const state = {
     buf: buffer,
     pos: 0,
-    storedObjects: [],
+    storedObjects: [], // Holes are unfilled reservations; null is a real None.
+    valueEnd: buffer.length,
     preserveNumberKinds: options?.preserveNumberKinds === true,
     storedNumberKinds: null,
     lastNumberKind: undefined,
@@ -1366,7 +1367,8 @@ function decodeMarshalStream(buffer, requireExactEnd, options, onRootKind) {
   }
 
   // Read save count
-  const saveCount = readUInt32LE(state);
+  const saveCount = readInt32LE(state);
+  if (saveCount < 0) throw new Error(`Invalid mapcount in marshal stream: ${saveCount}`);
 
   // Initialize stored objects array
   let valueEnd = buffer.length;
@@ -1377,14 +1379,21 @@ function decodeMarshalStream(buffer, requireExactEnd, options, onRootKind) {
         `Invalid marshal save table: need ${saveIndicesBytes} bytes, have ${buffer.length - state.pos}`,
       );
     }
-    state.storedObjects = new Array(saveCount).fill(null);
+    state.storedObjects = new Array(saveCount);
     if (state.preserveNumberKinds) {
       state.storedNumberKinds = new Array(saveCount);
     }
     state.saveIndicesPos = buffer.length - saveIndicesBytes;
     state.saveIndicesEnd = buffer.length;
     valueEnd = state.saveIndicesPos;
+    // Python2 blue ReadHeader validates the entire mapping before any object
+    // is read. Indices need not be unique or monotonic.
+    for (let pos = valueEnd; pos < buffer.length; pos += 4) {
+      const index = buffer.readInt32LE(pos);
+      if (index < 1 || index > saveCount) throw new Error("Bogus map data in marshal stream.");
+    }
   }
+  state.valueEnd = valueEnd;
 
   const value = decodeValue(state);
   if (requireExactEnd) {
@@ -1414,63 +1423,72 @@ function marshalDecodeExact(buffer, options) {
   return decodeMarshalStream(buffer, true, options);
 }
 
-function readUInt8(state) {
-  if (state.pos >= state.buf.length)
+function requireBytes(state, count) {
+  if (!Number.isSafeInteger(count) || count < 0 || count > state.valueEnd - state.pos)
     throw new Error("Unexpected end of marshal data");
+}
+
+function readUInt8(state) {
+  requireBytes(state, 1);
   return state.buf[state.pos++];
 }
 
 function peekUInt8(state) {
-  if (state.pos >= state.buf.length)
-    throw new Error("Unexpected end of marshal data");
+  requireBytes(state, 1);
   return state.buf[state.pos];
 }
 
 function readInt8(state) {
-  if (state.pos >= state.buf.length)
-    throw new Error("Unexpected end of marshal data");
+  requireBytes(state, 1);
   const val = state.buf.readInt8(state.pos);
   state.pos++;
   return val;
 }
 
 function readUInt16LE(state) {
+  requireBytes(state, 2);
   const val = state.buf.readUInt16LE(state.pos);
   state.pos += 2;
   return val;
 }
 
 function readInt16LE(state) {
+  requireBytes(state, 2);
   const val = state.buf.readInt16LE(state.pos);
   state.pos += 2;
   return val;
 }
 
 function readUInt32LE(state) {
+  requireBytes(state, 4);
   const val = state.buf.readUInt32LE(state.pos);
   state.pos += 4;
   return val;
 }
 
 function readInt32LE(state) {
+  requireBytes(state, 4);
   const val = state.buf.readInt32LE(state.pos);
   state.pos += 4;
   return val;
 }
 
 function readInt64LE(state) {
+  requireBytes(state, 8);
   const val = state.buf.readBigInt64LE(state.pos);
   state.pos += 8;
   return val;
 }
 
 function readDoubleLE(state) {
+  requireBytes(state, 8);
   const val = state.buf.readDoubleLE(state.pos);
   state.pos += 8;
   return val;
 }
 
 function readBytes(state, len) {
+  requireBytes(state, len);
   const slice = state.buf.slice(state.pos, state.pos + len);
   state.pos += len;
   return slice;
@@ -1478,10 +1496,10 @@ function readBytes(state, len) {
 
 function readSaveIndex(state) {
   if (state.saveIndicesPos === null || state.saveIndicesEnd === null) {
-    throw new Error("No marshal save index table available");
+    throw new Error("Shared object table overflow");
   }
   if (state.saveIndicesPos + 4 > state.saveIndicesEnd) {
-    throw new Error("Marshal save index table exhausted");
+    throw new Error("Shared object table overflow");
   }
 
   const index = state.buf.readUInt32LE(state.saveIndicesPos);
@@ -1489,10 +1507,22 @@ function readSaveIndex(state) {
   return index;
 }
 
+function publishSavedValue(state, index, value, numberKind) {
+  if (index === 0) return;
+  state.storedObjects[index - 1] = value;
+  if (state.preserveNumberKinds) state.storedNumberKinds[index - 1] = numberKind;
+}
+
+// Python2 blue af0d65b: these handlers register only after reading their value.
+// Other scalar/compact/DBRow/stream/reference handlers ignore their own bit.
+const lateSavedOpcodes = new Set([
+  Op.PyToken, Op.PyBuffer, Op.PyLongString, Op.cPicked, Op.PyVarInteger,
+]);
+
 function readSizeEx(state) {
   const first = readUInt8(state);
   if (first === 0xff) {
-    return readUInt32LE(state);
+    return readInt32LE(state); // Python2 ReadInteger's extended form is signed.
   }
   return first;
 }
@@ -1582,15 +1612,13 @@ function findPickleEnd(buffer, start) {
 }
 
 function decodeValue(state) {
-  if (state.pos >= state.buf.length) {
+  if (state.pos >= state.valueEnd) {
     throw new Error("Unexpected end of marshal data during decodeValue");
   }
 
   const rawOp = readUInt8(state);
   const flagSave = (rawOp & SAVE_MASK) !== 0;
-  const flagUnknown = (rawOp & UNKNOWN_MASK) !== 0;
   const op = rawOp & OPCODE_MASK;
-  const storageIndex = flagSave ? readSaveIndex(state) : 0;
 
   let result;
   let numberKind = state.preserveNumberKinds ? opcodeNumberKinds.get(op) : undefined;
@@ -1742,20 +1770,28 @@ function decodeValue(state) {
 
     case Op.PyOneTuple:
       result = [];
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), result);
       decodeInto(state, result, 0);
+      if (result[0] === result) throw new Error("Self referencing tuple");
       break;
 
     case Op.PyTwoTuple:
       result = [];
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), result);
       decodeInto(state, result, 0);
+      if (result[0] === result) throw new Error("Self referencing tuple");
       decodeInto(state, result, 1);
+      if (result[1] === result) throw new Error("Self referencing tuple");
       break;
 
     case Op.PyTuple: {
       const count = readSizeEx(state);
+      requireBytes(state, count); // blue CheckSpace precedes allocation/sharing.
       const arr = [];
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), arr);
       for (let i = 0; i < count; i++) {
         decodeInto(state, arr, i);
+        if (arr[i] === arr) throw new Error("Self referencing tuple");
       }
       result = arr;
       break;
@@ -1767,22 +1803,27 @@ function decodeValue(state) {
 
     case Op.PyOneList:
       result = { type: "list", items: [] };
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), result);
       decodeInto(state, result.items, 0);
       break;
 
     case Op.PyList: {
       const count = readSizeEx(state);
+      requireBytes(state, count);
       const items = [];
+      result = { type: "list", items };
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), result);
       for (let i = 0; i < count; i++) {
         decodeInto(state, items, i);
       }
-      result = { type: "list", items };
       break;
     }
 
     case Op.PyDict: {
       const count = readSizeEx(state);
       const entries = [];
+      result = { type: "dict", entries };
+      if (flagSave) publishSavedValue(state, readSaveIndex(state), result);
       // Marshal writes value first, then key
       for (let i = 0; i < count; i++) {
         const pair = [];
@@ -1790,33 +1831,42 @@ function decodeValue(state) {
         decodeInto(state, pair, 0);
         entries.push(pair);
       }
-      result = { type: "dict", entries };
       break;
     }
 
     case Op.PyObject: {
+      // INSTANCE reserves before the GUID, then becomes visible to its state.
+      const storageIndex = flagSave ? readSaveIndex(state) : 0;
       result = { type: "object" };
       decodeInto(state, result, "name");
+      publishSavedValue(state, storageIndex, result);
       decodeInto(state, result, "args");
       break;
     }
 
     case Op.PyObjectEx1:
     case Op.PyObjectEx2: {
+      // REDUCE/NEWOBJ reserve before the header. This structural codec does
+      // not execute Python constructors; publish its representation only
+      // after the complete header, before the iterator tails.
+      const storageIndex = flagSave ? readSaveIndex(state) : 0;
       const header = decodeValue(state);
       const headerKind = state.lastNumberKind;
       const list = [];
-      while (state.pos < state.buf.length) {
-        const peek = state.buf[state.pos] & OPCODE_MASK;
+      const dict = [];
+      result = { type: op === Op.PyObjectEx1 ? "objectex1" : "objectex2", header, list, dict };
+      if (state.preserveNumberKinds) setDecodedNumberKind(result, "header", headerKind);
+      publishSavedValue(state, storageIndex, result);
+      while (true) {
+        const peek = peekUInt8(state);
         if (peek === Op.PackedTerminator) {
           state.pos++;
           break;
         }
         decodeInto(state, list, list.length);
       }
-      const dict = [];
-      while (state.pos < state.buf.length) {
-        const peek = state.buf[state.pos] & OPCODE_MASK;
+      while (true) {
+        const peek = peekUInt8(state);
         if (peek === Op.PackedTerminator) {
           state.pos++;
           break;
@@ -1826,13 +1876,6 @@ function decodeValue(state) {
         decodeInto(state, pair, 1);
         dict.push(pair);
       }
-      result = {
-        type: op === Op.PyObjectEx1 ? "objectex1" : "objectex2",
-        header,
-        list,
-        dict,
-      };
-      if (state.preserveNumberKinds) setDecodedNumberKind(result, "header", headerKind);
       break;
     }
 
@@ -1873,7 +1916,7 @@ function decodeValue(state) {
     }
 
     case Op.cPicked: {
-      const end = findPickleEnd(state.buf, state.pos);
+      const end = findPickleEnd(state.buf.subarray(0, state.valueEnd), state.pos);
       result = {
         type: "cpicked",
         data: readBytes(state, end - state.pos),
@@ -1886,7 +1929,8 @@ function decodeValue(state) {
       if (
         state.storedObjects &&
         index > 0 &&
-        index <= state.storedObjects.length
+        index <= state.storedObjects.length &&
+        Object.prototype.hasOwnProperty.call(state.storedObjects, index - 1)
       ) {
         // CCP blue/src/Marshal.cpp ReadObjectReference returns mShared[index]
         // with an added reference. Rows, descriptors and object cells must
@@ -1894,7 +1938,7 @@ function decodeValue(state) {
         result = state.storedObjects[index - 1];
         numberKind = state.storedNumberKinds?.[index - 1];
       } else {
-        result = null;
+        throw new Error("Invalid TY_REFERENCE in stream");
       }
       break;
     }
@@ -1923,13 +1967,7 @@ function decodeValue(state) {
       );
   }
 
-  // Store object if flagSave is set
-  if (flagSave && state.storedObjects) {
-    if (storageIndex > 0 && storageIndex <= state.storedObjects.length) {
-      state.storedObjects[storageIndex - 1] = result;
-      if (state.preserveNumberKinds) state.storedNumberKinds[storageIndex - 1] = numberKind;
-    }
-  }
+  if (flagSave && lateSavedOpcodes.has(op)) publishSavedValue(state, readSaveIndex(state), result, numberKind);
 
   if (state.preserveNumberKinds) state.lastNumberKind = numberKind;
   return result;
