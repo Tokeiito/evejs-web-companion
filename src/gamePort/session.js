@@ -339,9 +339,6 @@ class GamePortSession {
     this.objectServices = new Map();
     /** moniker.py Bind: persistent identity (service, bindParams), independent of the current N=node:id. */
     this.objectCacheIdentities = new Map();
-    /** Remote inventory object's original session policy, checked before even
-     * a cached method answer. Native callback owns the actual typed policy. */
-    this.objectSessionChecks = new Map();
     /** Cached objects fetched so far, by object ID: {stamp, checksum, value}. */
     this.cachedObjects = new Map();
     /** objectCaching.methodCallCachingDetails: what the server said of a method's answers, by "service.method": {versionCheck, sessionInfo}. */
@@ -669,14 +666,12 @@ class GamePortSession {
     return objectID;
   }
 
-  /** A call on a bound object, by the "N=node:id" a bind returned. */
-  setObjectSessionCheck(objectID, check) {
-    if (typeof objectID !== "string" || !objectID.startsWith("N=") || typeof check !== "function") throw new TypeError("An actual remote object receipt and session check are required.");
-    this.objectSessionChecks.set(objectID, check);
-  }
-
-  callBound(objectID, method, args = [], kwargs = null) {
-    const dispatch = this.objectSessionChecks.get(objectID)?.();
+  /** Inventory holders pass their own receipt capability, not a per-N alias.
+   * Other not-yet-native services still use their actual N= string. */
+  callBound(remote, method, args = [], kwargs = null) {
+    const objectID = typeof remote === "string" ? remote : remote?.objectID;
+    if (typeof objectID !== "string" || !objectID.startsWith("N=")) throw new TypeError("An actual bound object is required.");
+    const dispatch = typeof remote === "string" ? undefined : remote.dispatch();
     // ObjectCallGPCS: MachoAddress(nodeID=long(nid)), read out of the object's ID.
     const prepareDestination = dispatch?.prepareDestination;
     let destination = null;
@@ -1069,7 +1064,6 @@ class GamePortSession {
       waiter.reject(error);
     }
     this.pending.clear();
-    this.objectSessionChecks.clear();
     this.handshakeInbox = [];
     try {
       this.transport.close();

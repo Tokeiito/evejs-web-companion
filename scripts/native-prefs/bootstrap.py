@@ -733,10 +733,20 @@ def _create_effective_session_context(preferences, boot):
     core = types.ClassType('CoreSession', (), types.FunctionType(definition(source, 'CoreSession'), namespace)())
     namespace['CoreSession'] = core
     original = types.ClassType('Session', (core,), types.FunctionType(definition(source, 'Session'), namespace)())
+    # Original client-local UUID graph, shared by this client's session fields.
+    # Wrappers retain weak proxies; their network service calls are not admitted
+    # by this field phase. Never import basesession's module-level scheduler.
+    namespace.update({'weakref': weakref, 'sys': sys, 'objectUUID': 0L,
+                      'objectsByUUID': weakref.WeakValueDictionary({})})
+    for name in ('ObjectcastCallWrapper', 'UpdatePublicAttributesCallWrapper'):
+        namespace[name] = types.ClassType(name, (), types.FunctionType(definition(source, name), namespace)())
+    for name in ('GetObjectUUID', 'GetObjectByUUID'):
+        namespace[name] = types.FunctionType(definition(source, name), namespace)
     selected = {'__module__': 'companion.effective_session_fields',
                 '__persistvars__': original.__persistvars__,
                 '__attributesWithDefaultValueOfZero__': original.__attributesWithDefaultValueOfZero__}
-    for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets', 'Masquerade', 'GetActualSession'):
+    for name in ('GetDefaultValueOfAttribute', 'ComputeNotifySets', 'Masquerade', 'GetActualSession',
+                 'RegisterMachoObjectConnection', 'UnregisterMachoObjectConnection'):
         selected[name] = core.__dict__[name]
     selected['__repr__'] = core.__dict__['__repr__']
     for name in ('RecalculateDependantAttributes', 'RecalculateDependantAttributesWithChanges'):
@@ -745,6 +755,7 @@ def _create_effective_session_context(preferences, boot):
     for name in original.__persistvars__ + ['locationid', 'corprole']:
         state.__dict__[name] = state.GetDefaultValueOfAttribute(name)
     state.__dict__['sessionType'] = session_constants.SESSION_TYPE_GAME
+    state.__dict__['machoObjectConnectionsByObjectID'] = {}  # Original CoreSession647 literal.
 
     def display_list(name):
         # Read only the original constructor's closed literal assignment.
@@ -843,6 +854,8 @@ def _create_effective_session_context(preferences, boot):
     result.run_masked, result.MasqueradeMask = run_masked, mask
     result.wire_pair = lambda old, new: (old, new)
     result.preferences, result.boot, result.source_classes = preferences, boot, (core, original)
+    result.get_object_uuid, result.get_object_by_uuid = namespace['GetObjectUUID'], namespace['GetObjectByUUID']
+    result.objects_by_uuid = namespace['objectsByUUID']
     result.last_notify, result.last_disappeared = {}, set()
     restore_current()
     return result
@@ -2165,10 +2178,9 @@ def _attach_godma_inventory_rows(owner):
 
 
 def _attach_inventory_session_checks(owner, context):
-    # Original remote-object policy applied to the actual transport receipt.
-    # This is a check record, NOT a fabricated MachoObjectConnection or native
-    # inventory container. Their constructor/session/RPC graph remains absent.
-    import types
+    # Genuine inventory MachoObjectConnection construction/weak registration.
+    # The ObjectCall service/RPC scheduler and native containers are separate.
+    import types, weakref
     existing = getattr(owner, 'inventory_session_checks', None)
     if existing is not None:
         if existing.context is not context:
@@ -2198,10 +2210,9 @@ def _attach_inventory_session_checks(owner, context):
     if len(methods) != 1:
         raise ImportError('Ambiguous installed remote session check')
     godma_globals = type(owner.instance).__dict__['__init__'].func_globals
-    namespace = {'__name__': 'companion.inventory_session_checks', '__builtins__': __builtins__, 'log': godma_globals['log']}
-    perform = types.FunctionType(methods[0], namespace)
-    KeyVal = owner.constants_owner.modules['utillib'].KeyVal
-    result = types.ModuleType(namespace['__name__'])
+    namespace = {'__name__': 'carbon.common.script.net.ObjectCallGPCS', '__builtins__': __builtins__,
+                 'log': godma_globals['log'], 'weakref': weakref, 'sys': sys}
+    result = types.ModuleType('companion.inventory_connections')
     # Execute genuine selected exception CLASS bodies; importing the whole GPS
     # module would publish shared builtins and admit unrelated engine clocks.
     exception_namespace = {'__name__': 'carbon.common.script.net.GPSExceptions', '__builtins__': __builtins__}
@@ -2211,42 +2222,55 @@ def _attach_inventory_session_checks(owner, context):
     bad_address = type('GPSBadAddress', (gps_exception,), types.FunctionType(definition(exception_source, 'GPSBadAddress'), exception_namespace)())
     exception_namespace['GPSBadAddress'] = bad_address
     session_globals = context.source_classes[0].__dict__['Masquerade'].func_globals
+    session_globals['log'] = godma_globals['log']
     address_namespace = {'__name__': 'carbon.common.script.net.machoNetAddress', '__builtins__': __builtins__,
                          'GPSBadAddress': bad_address, 'const': owner.constants_owner.modules['carbon.common.lib.const'],
                          'log': godma_globals['log'], 'strx': session_globals['strx'], 'machobase': session_globals['machobase']}
     address = types.ClassType('MachoAddress', (), types.FunctionType(definition(module_code('machoNetAddress'), 'MachoAddress'), address_namespace)())
+    namespace.update({'MachoAddress': address, 'strx': session_globals['strx'],
+                      'boot': context.boot, 'macho': session_globals['machobase']})
+    wrapper = types.ClassType('MachoObjectCallWrapper', (), types.FunctionType(definition(code, 'MachoObjectCallWrapper'), namespace)())
+    namespace['MachoObjectCallWrapper'] = wrapper
+    connection_type = types.ClassType('MachoObjectConnection', (), types.FunctionType(classes[0], namespace)())
+    # Exact constructor inputs owned for this client, not a pretend ObjectCall
+    # service. No ObjectCallWithoutTheStars/ThrottledCall or release scheduler
+    # provider is installed. The untouched destructor can queue actual releases.
+    connection_fields = type('ObjectCallConnectionFields', (object,), {
+        '__module__': 'companion.object_call_connection_fields'})()
+    connection_fields.machoNet = context.connection_fields
+    connection_fields.releasedObjects = {}
+    perform = connection_type.__dict__['PerformSessionCheck']
     result.context, result.MachoAddress, result.GPSBadAddress = context, address, bad_address
+    result.MachoObjectConnection, result.connection_fields = connection_type, connection_fields
 
     def new_policy():
         return {}
 
-    def receipt(context, policy, object_id, ref_id):
-        # Selected check-record ingress, not MachoObjectConnection creation or
-        # registration. Preserve the server's actual typed reference ID now;
-        # real constructor/weak-registry/release ownership follows separately.
-        clisid = context.run_masked(context.connection_fields.GetClientSessionID)
-        # Original remote node branch518-526: parse the ACTUAL string in native
-        # Python, then run the untouched original address constructor. No JS
-        # Number rounding and no hand-built substitute for MachoAddress.
-        nid, oid = object_id.split(':')
-        nid = nid.split('=')[1]
-        destination = address(nodeID=long(nid))
-        return KeyVal(session=context.session, sessionCheck=policy, objectID=object_id, persistantObjectID=object_id, refID=ref_id, clisid=clisid, destination=destination)
+    def wire_tuple(*values):
+        return values
+
+    def new_list():
+        return []
+
+    def receipt(context, object_id, public_attributes, ref_id):
+        context.assert_entry()
+        return connection_type(context.fields, connection_fields, object_id, public_attributes, ref_id)
 
     def check_current(context, record):
         # Original getter's PerformSessionCheck precedes the call wrapper's
-        # current-client check (ObjectCallGPCS586-625). This remains a selected
-        # check record, not a fabricated native connection or synchronous RPC.
+        # current-client check (ObjectCallGPCS586-625). RPC remains managed;
+        # do not pretend the original synchronous wrapper's scheduler is ready.
         perform(record)
         if context.connection_fields.GetClientSessionID() != record.clisid:
             raise RuntimeError('This object was acquired by a different session')
 
     def perform_in_context(context, record):
-        if record.session is not context.session:
+        if record.session.GetActualSession() is not context.fields:
             raise ValueError('Inventory checks must use their actual native session owner')
         return context.run_masked(check_current, (context, record))
 
     result.new_policy, result.receipt, result.perform = new_policy, receipt, perform
+    result.wire_tuple, result.new_list = wire_tuple, new_list
     result.perform_in_context = perform_in_context
     owner.inventory_session_checks = result
     return result

@@ -96,7 +96,8 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
     });
     return preparingItemHeader; // Retain a failed native construction prefix.
   }
-  /** The containers held, by key: { location, owner, objectID, items: Map(itemKey -> row), listed: Set(flag | null), work }. */
+  /** The containers held, by key. objectID retains the remote receipt capability
+   * (a bare N= string only for a not-yet-native provider), including its guard. */
   const containers = new Map();
   /** The binds under way, by key: each a promise of the bound object, or of null where the bind failed. */
   const binding = new Map();

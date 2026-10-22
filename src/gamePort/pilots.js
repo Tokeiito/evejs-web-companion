@@ -5794,15 +5794,15 @@ function createGamePortPilots({
     const objectID = answeredObject(entry.session, "invbroker", answer);
     if (objectID && policy) {
       const scope = policy.receipt(objectID, remoteObjectReference(answer));
-      entry.session.setObjectSessionCheck(objectID, scope.dispatch);
+      return Object.freeze({ objectID, dispatch: scope.dispatch });
     }
     return objectID;
   }
 
   /**
    * Make the bind the BFF asked the gateway for, as the retail client makes
-   * it. Answers the bound object's "N=...", or null when the server handed
-   * none back.
+   * it. Inventory answers retain their receipt capability; other services
+   * still answer their N= string. Null means the server handed none back.
    */
   async function bindRetail(entry, service, method, args, kwargs) {
     const { session } = entry;
@@ -6391,7 +6391,11 @@ function createGamePortPilots({
     }
     if (!objectID) throw fail("BOUND_NO_OBJECT", `${service}.${method} did not return a bound object.`);
     const boundHandle = randomBytes(24).toString("base64url");
-    const object = container === null ? { objectID, service } : { objectID, service, container };
+    // The cache and each retained handle own the actual receipt capability.
+    // Forgetting one holder must not retarget or unguard another older handle.
+    const remote = objectID;
+    if (typeof remote !== "string") objectID = remote.objectID;
+    const object = container === null ? { objectID, service, remote } : { objectID, service, container, remote };
     entry.bound.set(boundHandle, object);
     // fleetSvc.CreateFleet: self.fleet = sm.RemoteSvc('fleetObjectHandler').CreateFleet(), from the answer on.
     if (method === "CreateFleet") entry.fleet = object;
@@ -6450,7 +6454,7 @@ function createGamePortPilots({
         return entry.session.callBound(shipInventory, method, argumentsToWire(form.args), form.kwargs);
       }
       return object.params === undefined
-        ? entry.session.callBound(object.objectID, method, argumentsToWire(asSent.args), asSent.kwargs)
+        ? entry.session.callBound(object.remote ?? object.objectID, method, argumentsToWire(asSent.args), asSent.kwargs)
         : handleCall(entry, String(boundHandle), object, method, argumentsToWire(asSent.args), asSent.kwargs);
     };
     // What a container lists is the inventory cache's to answer: asked for, and noted, only where nothing is kept.
@@ -6460,7 +6464,7 @@ function createGamePortPilots({
       const ownForm = shape("invbroker", "GetSelfInvItem", [], null, contextFor(entry));
       ledger.note("invbroker", "GetSelfInvItem", ownForm);
       return object.params === undefined
-        ? entry.session.callBound(object.objectID, "GetSelfInvItem", argumentsToWire(ownForm.args), ownForm.kwargs)
+        ? entry.session.callBound(object.remote ?? object.objectID, "GetSelfInvItem", argumentsToWire(ownForm.args), ownForm.kwargs)
         : handleCall(entry, String(boundHandle), object, "GetSelfInvItem", argumentsToWire(ownForm.args), ownForm.kwargs);
     };
     // A planet's colony and what the planet carries are kept by the planet, where they are asked as the client asks them.
