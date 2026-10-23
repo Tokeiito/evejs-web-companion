@@ -67,6 +67,7 @@ const { createTrainingAccounts } = require("./trainingAccounts");
 const { createCharacterCreation } = require("./characterCreation");
 const { createCreationAttemptJournal } = require("./creationAttemptJournal");
 const { createBridgeSessionJournal } = require("./bridgeSessionJournal");
+const { journaledPilotTransport } = require("./journaledPilotTransport");
 const config = require("./config");
 const botScriptStoreModule = require("./botScriptStore");
 const { lazyCompanionDb } = require("./companionDb");
@@ -363,11 +364,16 @@ app.locals.gamePortPilots = gamePortPilots;
 // What a socket's hello is checked by (src/pilotSocket.js): whether a token is a web session's. Each operation
 // carried on the socket is then authenticated by its own route, as over HTTP.
 app.locals.verifySessionToken = (token) => (options.webAuth || webAuth).verifySessionToken(token);
-const gateway = mutationFence.wrap(createPilotTransport({
+const bridgeSessionJournal = createBridgeSessionJournal({
+  filePath: options.bridgeSessionStore ? null : options.bridgeSessionJournalPath ||
+    (options.eveStore ? null : path.join(config.dataDir, "bridge-sessions.json")),
+});
+const trackedPilotTransport = journaledPilotTransport(createPilotTransport({
   gateway: accountGateway,
   gamePort: gamePortPilots,
   transportFor: options.pilotTransportFor || (pilotSetting ? (who) => pilotSetting.transportFor(who) : undefined),
-}));
+}), bridgeSessionJournal);
+const gateway = mutationFence.wrap(trackedPilotTransport);
 const auth = options.webAuth || webAuth;
 const staticData = options.staticData || staticDataModule;
 // The retail client's own text for the labels the server sends, read from the
@@ -432,10 +438,6 @@ const industryPlans =
 // never sees the handle; it just gets its character/station state back.
 // Mirrored to disk (src/bridgeSessionJournal.js) so the next start can release
 // what this process held instead of leaving the pilots online until the TTL.
-const bridgeSessionJournal = createBridgeSessionJournal({
-  filePath: options.bridgeSessionStore ? null : options.bridgeSessionJournalPath ||
-    (options.eveStore ? null : path.join(config.dataDir, "bridge-sessions.json")),
-});
 const bridgeSessions = options.bridgeSessionStore || bridgeSessionJournal.createSessionMap();
 // The tally says of a read of one character whether that character was online here then: a read the plan
 // keeps on the gateway for pilots who are offline is another matter when the pilot is online.
@@ -599,8 +601,8 @@ const botHost =
 app.locals.botHost = botHost;
 app.locals.bridgeSessions = bridgeSessions;
 // startServer() releases the previous process's sessions before bots resume.
-app.locals.releaseOrphanedBridgeSessions = () => bridgeSessionJournal.releaseOrphans(
-  (bridgeSessionID, sessionFields) => gateway.releaseBridgeSession(bridgeSessionID, sessionFields));
+app.locals.releaseOrphanedBridgeSessions = (isCurrent = () => true) => bridgeSessionJournal.releaseOrphans(
+  (bridgeSessionID, sessionFields) => gateway.releaseBridgeSession(bridgeSessionID, sessionFields), { shouldContinue: isCurrent });
 app.locals.replenishment = replenishment;
 const factorySessions = createFactorySessions({ store, gateway, operations: characterOperations, heldSessions: bridgeSessions, botHost,
   withLease: mutationFence.withLease });
@@ -1087,7 +1089,7 @@ const provisioningCenter = require("./provisioningCenter").registerProvisioningC
   withLease: mutationFence.withLease,
   // Exact administrative release remains available while shared custody blocks
   // inventory writes. Only the bounded service's acquired handle reaches here.
-  releaseSession: (handle, fields) => (options.eveGatewayClient || eveGatewayClient).releaseBridgeSession(handle, fields),
+  releaseSession: (handle, fields) => trackedPilotTransport.releaseBridgeSession(handle, fields),
   selectedAdapter: provisioningRoutes.adapter,
   filePath: options.provisioningCenterJournalPath || (options.eveStore ? null : path.join(config.dataDir, "provisioning-center-control.json")),
   fault: options.provisioningCenterFault || null,
@@ -17763,7 +17765,10 @@ function startServer(options = {}) {
   const host = options.host || config.host;
   const port = options.port === undefined ? config.port : Number(options.port);
   const server = http.createServer(appToStart);
+  let startupRetired = false;
+  const isCurrent = () => !startupRetired && server.listening;
   server.listen(port, host, () => {
+    if (!isCurrent()) return;
     const address = server.address();
     const activePort = address && typeof address === "object" ? address.port : port;
     if (options.silent !== true) {
@@ -17797,7 +17802,7 @@ function startServer(options = {}) {
     // and AFTER the last process's sessions are released, because until then
     // the gateway still has every one of those pilots online and a resumed bot
     // would be refused its own hull.
-    const released = appToStart.locals.releaseOrphanedBridgeSessions?.()
+    const released = appToStart.locals.releaseOrphanedBridgeSessions?.(isCurrent)
       .then((outcome) => {
         if (options.silent !== true && outcome.released + outcome.gone + outcome.failed > 0) {
           console.log(`Previous sessions: ${outcome.released} released, ${outcome.gone} already gone, ${outcome.failed} failed`);
@@ -17806,7 +17811,7 @@ function startServer(options = {}) {
       .catch((error) => console.error(error));
     if (options.resumeServerBots !== false) {
       void Promise.resolve(released)
-        .then(() => appToStart.locals.botHost?.resume())
+        .then(() => isCurrent() ? appToStart.locals.botHost?.resume() : undefined)
         .catch((error) => console.error(error));
     }
   });
@@ -17821,12 +17826,16 @@ function startServer(options = {}) {
   // the tabs' sockets would keep it from ever having closed. They are closed as the closing begins.
   const closeServer = server.close.bind(server);
   server.close = (callback) => {
+    startupRetired = true;
     void pilotSocket.close();
     return closeServer(callback);
   };
   // A pilot on the game port is a connection held by this process. When the
   // server stops, each is closed, which logs the pilot off as a closed client would.
-  server.on("close", () => appToStart.locals.gamePortPilots?.shutdown?.());
+  server.on("close", () => {
+    startupRetired = true;
+    appToStart.locals.gamePortPilots?.shutdown?.();
+  });
   return server;
 }
 
