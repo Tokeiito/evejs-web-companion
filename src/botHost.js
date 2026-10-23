@@ -868,7 +868,7 @@ function createBotHost(options) {
       // any other — decodeCompanionSetupValue is its ONE gate, mirroring
       // decodeScriptValue below. Not a single field of it is trusted before
       // this call returns ok.
-      const decoded = stack.decodeCompanionSetupValue(request);
+      const decoded = stack.decodeCompanionSetupValue(request, { preserveLegacyIdentity: true });
       if (!decoded.ok) {
         return { ok: false, code: "BOTCOMPANION_INVALID", message: decoded.refusal };
       }

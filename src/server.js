@@ -17110,7 +17110,7 @@ app.post("/api/bots/bot-log", requireAuth, (req, res, next) => {
       res.status(400).json({ ok: false, error: "INVALID_ENTRIES", message: "entries must be a list." });
       return;
     }
-    const written = botLogStore.append(held.characterID, entries.slice(0, 500));
+    const written = botLogStore.append(held.characterID, entries.slice(0, 500), { batchID: req.body.batchID });
     res.json({ ok: true, written });
   } catch (error) {
     next(error);

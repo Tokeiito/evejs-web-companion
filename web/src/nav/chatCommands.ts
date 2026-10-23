@@ -250,8 +250,8 @@ export type ChatCommandKind =
  *
  * ⚠ NAMES AND LINKS BOTH, BECAUSE A COMMANDER WRITES EITHER. Dragging a pilot
  * into chat makes a showinfo link that carries the character id, and that id is
- * the reliable half; typing the name is the quick half, and is matched as a
- * whole word against what is left once the links are taken out. Nothing here
+ * the reliable half; typing the name is the quick half, and complete names
+ * are matched against what is left once the links are taken out. Nothing here
  * knows the fleet's names, so the parser keeps both and `selectsPilot` asks each
  * pilot whether it is one of them.
  *
@@ -734,14 +734,17 @@ function pilotSelectorFrom(remainder: string): PilotSelector {
  * Whether the pilot `characterID` / `characterName` is one a `status` or `repair`
  * line addressed.
  *
- * A typed name counts only as a WHOLE WORD of the line, case-insensitively, so
- * "Test" does not answer for "Test Two" and "Al" does not answer for "all". A
- * pilot whose own name could not be read answers only to a link or to everyone.
+ * Typed names are complete names, matched case-insensitively. A complete fleet
+ * name list allows space-separated names, longest first: "Test Two" addresses
+ * that pilot rather than "Test" and "Two". Unknown text invalidates its segment.
+ * Without the complete list, each comma/semicolon-separated segment must be
+ * exactly this pilot's name. Links and "everyone" need no name lookup.
  */
 export function selectsPilot(
   who: PilotSelector,
   characterID: number | null,
   characterName: string | null,
+  knownPilotNames: readonly string[] | null = null,
 ): boolean {
   if (who.everyone) {
     return true;
@@ -753,11 +756,27 @@ export function selectsPilot(
   if (name === "") {
     return false;
   }
-  const isWordChar = (char: string | undefined): boolean => char !== undefined && /[\p{L}\p{N}]/u.test(char);
-  for (let at = who.text.indexOf(name); at !== -1; at = who.text.indexOf(name, at + 1)) {
-    if (!isWordChar(who.text[at - 1]) && !isWordChar(who.text[at + name.length])) {
-      return true;
+  const segments = who.text.split(/[,;]/).map((segment) => segment.trim());
+  if (knownPilotNames === null) {
+    return segments.includes(name);
+  }
+  const names = [...new Set([name, ...knownPilotNames.map((entry) => entry.trim().toLowerCase())])]
+    .filter((entry) => entry !== "")
+    .sort((a, b) => b.length - a.length);
+  for (const segment of segments) {
+    let rest = segment;
+    let selected = false;
+    while (rest !== "") {
+      const matched = names.find((candidate) => rest.startsWith(candidate) &&
+        (rest.length === candidate.length || /\s/.test(rest[candidate.length]!)));
+      if (matched === undefined) {
+        selected = false;
+        break;
+      }
+      selected ||= matched === name;
+      rest = rest.slice(matched.length).trimStart();
     }
+    if (selected) return true;
   }
   return false;
 }

@@ -29,6 +29,31 @@ function setup(overrides: Partial<CompanionSetup> = {}): CompanionSetup {
   return { ...DEFAULT_COMPANION_SETUP, ...overrides };
 }
 
+test("hosted decoding preserves the identity of approved legacy drone settings", () => {
+  const legacy = { ...setup(), droneHealthFloor: 0.5, droneRedeployHoldOffSeconds: 10 };
+  const hosted = decodeCompanionSetupValue(legacy, { preserveLegacyIdentity: true });
+  assert.ok(hosted.ok);
+  assert.deepEqual(hosted.setup, legacy);
+  // UI settings still migrate away from controls the flight no longer reads.
+  const browser = decodeCompanionSetupValue(legacy);
+  assert.ok(browser.ok);
+  assert.deepEqual(browser.setup, setup());
+  assert.deepEqual(analyzeCompanionRunPolicy(hosted.setup), analyzeCompanionRunPolicy(browser.setup));
+});
+
+test("hosted identity decoding neither invents legacy values nor accepts malformed ones", () => {
+  const modern = decodeCompanionSetupValue(setup(), { preserveLegacyIdentity: true });
+  assert.ok(modern.ok);
+  assert.deepEqual(modern.setup, setup());
+  for (const fields of [
+    { droneHealthFloor: null }, { droneHealthFloor: 0 }, { droneHealthFloor: 1 },
+    { droneRedeployHoldOffSeconds: "10" }, { droneRedeployHoldOffSeconds: 0 },
+    { droneRedeployHoldOffSeconds: 301 },
+  ]) {
+    assert.equal(decodeCompanionSetupValue({ ...setup(), ...fields }, { preserveLegacyIdentity: true }).ok, false);
+  }
+});
+
 // The ESI docs' own example CharacterID (obviously synthetic, self-describing)
 // — used only for the abandonment record's supervisor list below.
 const SYNTHETIC_CHARACTER_ID = 90000001;

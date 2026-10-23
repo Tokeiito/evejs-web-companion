@@ -192,8 +192,9 @@ export function analyzeCompanionRunPolicy(setup: CompanionSetup): BotRunPolicy {
 // treats a failed decode as "nothing was saved here" — so the visible symptom
 // of a plain deletion would be every existing squad quietly losing its setup
 // on the very next load. `COMPANION_RETIRED_KEYS` below names exactly those
-// fifteen, and the two drone settings retired the same way on 2026-10-12: a key on that list is accepted, its value is thrown away without
-// being looked at, and it is never written back. A key in NEITHER set is
+// fifteen, and the two drone settings retired on 2026-10-12. Browser settings
+// discard them; the host can retain the two validated drone values solely to
+// preserve an existing grant's canonical request identity. A key in NEITHER set is
 // still refused — that rule is exactly as strict as it always was. Do not
 // read this as "unknown keys are fine now": it is a closed, finite list of
 // names this codec once owned and no longer does, and it must stay finite. A
@@ -245,7 +246,8 @@ const COMPANION_RETIRED_KEYS = new Set<string>([
   // Retired 2026-10-12, when rung 6 began rotating the one drone whose shield
   // is below full instead of recalling the flight at a floor and holding it.
   // Neither number has anything left to configure; every saved squad carries
-  // both, so they are accepted and dropped like the names above.
+  // both. Browser settings drop them; hosted identity decoding preserves valid
+  // values as metadata without restoring the old flight controls.
   "droneHealthFloor",
   "droneRedeployHoldOffSeconds",
 ]);
@@ -287,8 +289,11 @@ function isFiniteNumberInRange(value: unknown, min: number, max: number): value 
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
-/** Decode an already-parsed, UNTRUSTED value into a `CompanionSetup`. */
-export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict {
+/** Decode a setup. Hosted requests retain valid retired values solely for their approved hash. */
+export function decodeCompanionSetupValue(
+  value: unknown,
+  { preserveLegacyIdentity = false }: { readonly preserveLegacyIdentity?: boolean } = {},
+): CompanionSetupVerdict {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, refusal: SAY.notObject };
   }
@@ -351,12 +356,36 @@ export function decodeCompanionSetupValue(value: unknown): CompanionSetupVerdict
     return { ok: false, refusal: SAY.badRepairsAtStation };
   }
 
+  // These fields no longer control flight. Existing hosted grants nevertheless
+  // hash them, so dropping them would reject an unchanged persisted request.
+  // Preserve their original, validated representation only at the host's
+  // identity boundary; browser settings still discard the retired controls.
+  // No default is inserted, and the host's normal hash/risk/expiry checks stand.
+  const legacyIdentity: { droneHealthFloor?: number; droneRedeployHoldOffSeconds?: number } = {};
+  if (preserveLegacyIdentity) {
+    if (Object.hasOwn(obj, "droneHealthFloor")) {
+      const floor = obj["droneHealthFloor"];
+      if (!isFiniteNumberInRange(floor, 0.05, 0.95)) {
+        return { ok: false, refusal: "This companion setup's saved drone-health threshold is not valid." };
+      }
+      legacyIdentity.droneHealthFloor = floor;
+    }
+    if (Object.hasOwn(obj, "droneRedeployHoldOffSeconds")) {
+      const holdOff = obj["droneRedeployHoldOffSeconds"];
+      if (!isFiniteNumberInRange(holdOff, 1, 300)) {
+        return { ok: false, refusal: "This companion setup's saved drone hold-off time is not valid." };
+      }
+      legacyIdentity.droneRedeployHoldOffSeconds = holdOff;
+    }
+  }
+
   const setup: CompanionSetup = {
     fleeHealthFloor,
     capacitorFloor,
     maxFleeAttempts,
     repairsAtStation,
     ...(abandonDronesHealthFloor === undefined ? {} : { abandonDronesHealthFloor }),
+    ...legacyIdentity,
   };
   return { ok: true, setup: Object.freeze(setup) };
 }

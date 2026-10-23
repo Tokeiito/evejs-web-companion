@@ -512,7 +512,7 @@ import {
 } from "../bots/companionFitCheck.ts";
 import { voteTankLayer } from "../bots/tankLayer.ts";
 import type { BotLogDraft, BotLogSink } from "../nav/botLog.ts";
-import { createBotLogBuffer } from "./botLogBuffer.ts";
+import { createBotLogWriter } from "./botLogWriter.ts";
 import {
   routeAlong,
   type SystemGraph,
@@ -22830,6 +22830,16 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           fleetSnapshot = null;
         }
         const ownCharacterID = store.station.get().online?.characterID ?? null;
+        // Plain-name chat selectors need the complete roster to distinguish
+        // "Test" from "Test Two". A partial name read stays unknown, so the
+        // selector can use its conservative complete-segment fallback.
+        let fleetMemberNames: readonly string[] | null = null;
+        if (fleetMemberCharacterIDs !== null) {
+          await resolveNamesNow(fleetMemberCharacterIDs.map((id) => ({ kind: "character" as const, id }))).catch(() => {});
+          const resolved = store.names.get().resolved;
+          const names = fleetMemberCharacterIDs.map((id) => resolved[nameKey("character", id)]);
+          if (names.every((name): name is string => typeof name === "string" && name.trim() !== "")) fleetMemberNames = names;
+        }
         // ⚠ FREE, NEVER GATED — unlike the roster read just above (an HTTP
         // call, gated elsewhere behind FLEET_SUPPORT_MACROS), these two ride
         // the fleet slice the notification drain already fills. Gating them
@@ -22892,6 +22902,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           snapshot,
           inFleet,
           fleetMemberCharacterIDs,
+          fleetMemberNames,
           myCharacterID: ownCharacterID,
           // Needed by the `loot` rung's ownership gate. Absent until now,
           // which is why its corp clause was silently dead.
@@ -26742,56 +26753,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
    * ship them to this character's log on the BFF.
    *
    * ⚠ IT MUST NEVER COST THE RUN ANYTHING. Nothing here is awaited by the
-   * runner, and the buffer is capped (web/src/app/botLogBuffer.ts) — a
-   * recorder that cannot reach the BFF must not grow until the tab dies. A
-   * failed flush puts its batch back for exactly ONE retry; a batch that fails
-   * twice is dropped, so the log can never become an unbounded queue. A `start`
-   * line flushes at once, because it is what rotates the previous run's log and
-   * a run that ends badly must not take its own header with it.
+   * runner. The writer caps its buffer, serializes deliveries and retries the
+   * exact batch once with the same delivery id. A newer run can never overtake
+   * an older retry and rotate the logs out of order.
    */
-  const BOT_LOG_FLUSH_MS = 3000;
-  const botLogBuffer = createBotLogBuffer<BotLogDraft>();
-  let botLogTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function scheduleBotLogFlush(): void {
-    if (botLogTimer === null) {
-      botLogTimer = setTimeout(() => {
-        void flushBotLog();
-      }, BOT_LOG_FLUSH_MS);
-    }
-  }
-
-  async function flushBotLog(): Promise<void> {
-    if (botLogTimer !== null) {
-      clearTimeout(botLogTimer);
-      botLogTimer = null;
-    }
-    if (botLogBuffer.size === 0) {
-      return;
-    }
-    const batch = botLogBuffer.take();
-    try {
-      await api.appendBotLog(batch.lines, callOptions);
-    } catch {
-      // Back to the front for one retry; a second failure drops it.
-      botLogBuffer.requeue(batch);
-    }
-    // More than one route-sized batch, or a retry, is still waiting.
-    if (botLogBuffer.size > 0) {
-      scheduleBotLogFlush();
-    }
-  }
-
-  const botLogSink: BotLogSink = {
-    write(draft) {
-      botLogBuffer.push(draft);
-      if (draft.kind === "start" || draft.kind === "end") {
-        void flushBotLog();
-        return;
-      }
-      scheduleBotLogFlush();
-    },
-  };
+  const botLogSink: BotLogSink = createBotLogWriter<BotLogDraft>(
+    (entries, batchID) => api.appendBotLog(entries, callOptions, batchID),
+  );
 
   function makeScriptRunnerDeps(
     initialCapabilities: ScriptModuleCapabilities,

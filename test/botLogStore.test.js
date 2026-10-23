@@ -42,6 +42,28 @@ test("one character never sees another's log", () => {
   assert.deepEqual(store.read(OTHER, "current"), []);
 });
 
+test("retrying an explicitly identified batch neither duplicates lines nor rotates its start again", () => {
+  const { store } = tempStore();
+  store.append(CHARACTER, [line("start", { run: "older" })]);
+  const entries = [line("start"), line("issue", { says: "undock" })];
+  assert.equal(store.append(CHARACTER, entries, { batchID: "delivery-1" }), 2);
+  assert.equal(store.append(CHARACTER, entries, { batchID: "delivery-1" }), 2, "a retry acknowledges the committed delivery");
+  assert.deepEqual(store.read(CHARACTER).map((row) => row.kind), ["start", "issue"]);
+  assert.deepEqual(store.read(CHARACTER, "previous").map((row) => row.run), ["older"]);
+  assert.deepEqual(store.read(CHARACTER, "previous2"), []);
+  assert.equal(store.append(OTHER, entries, { batchID: "delivery-1" }), 2, "delivery identities are scoped to the character");
+  assert.equal(store.read(OTHER).length, 2);
+});
+
+test("a repeated legacy start without a delivery identity still begins a new run", () => {
+  const { store } = tempStore();
+  const entries = [line("start")];
+  store.append(CHARACTER, entries);
+  store.append(CHARACTER, entries);
+  assert.equal(store.read(CHARACTER).length, 1);
+  assert.equal(store.read(CHARACTER, "previous").length, 1);
+});
+
 test("a pilot who has never run a bot has an empty log, not a failure", () => {
   const { store } = tempStore();
   assert.deepEqual(store.read(CHARACTER, "current"), []);

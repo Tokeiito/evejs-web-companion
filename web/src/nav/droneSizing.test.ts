@@ -9,6 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { decodeDroneBay } from "../bridge/drones.ts";
 
 import {
   DRONE_SIZING_ATTRIBUTE_IDS,
@@ -66,6 +67,19 @@ const FACTS = new Map<number, DroneFacts>([
 
 const FRIGATE: TargetFacts = { signatureRadius: 35, speed: 400, distanceFromShipM: 8000 };
 const BATTLESHIP: TargetFacts = { signatureRadius: 400, speed: 100, distanceFromShipM: 8000 };
+
+test("a sized launch fills the flight from fresh and recovered singleton bay rows", () => {
+  const bay = decodeDroneBay([
+    { itemID: 11, typeID: 2454, quantity: 1 },
+    { itemID: 12, typeID: 2454, quantity: -1 },
+    { itemID: 13, typeID: 2454, quantity: -1 },
+    { itemID: 14, typeID: 2454, quantity: -1 },
+    { itemID: 15, typeID: 2454, quantity: -1 },
+  ]);
+  assert.ok(bay !== null);
+  const plan = sizedLaunch(bay, FACTS, { bandwidthMbit: 25, maxActive: 5 }, [FRIGATE]);
+  assert.deepEqual(plan?.stacks, bay.map(({ itemID }) => ({ itemID, quantity: 1 })));
+});
 
 test("the attribute ids are exactly the ones the reader uses, all distinct", () => {
   assert.equal(new Set(DRONE_SIZING_ATTRIBUTE_IDS).size, DRONE_SIZING_ATTRIBUTE_IDS.length);

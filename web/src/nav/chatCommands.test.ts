@@ -740,6 +740,24 @@ test("a typed name addresses that pilot, as a whole word and in any case", () =>
   assert.equal(selectsPilot(who("repair Pilot Alpha"), PILOT_ID, "Pilot Al"), false);
 });
 
+test("addressed orders choose complete names before shorter fleet names", () => {
+  const names = ["Test", "Test Two", "Two", "Pilot Beta"];
+  for (const line of ["status Test Two", "repair Test Two", `rearm at <url=showinfo:1529//60000001>Station</url> Test Two`]) {
+    const command = parseChatCommand(chatMessage(line));
+    assert.ok(command?.kind === "status" || command?.kind === "repair" || command?.kind === "rearm");
+    assert.equal(selectsPilot(command.who, 90000005, "Test", names), false, line);
+    assert.equal(selectsPilot(command.who, 90000006, "Two", names), false, line);
+    assert.equal(selectsPilot(command.who, 90000007, "Test Two", names), true, line);
+  }
+  assert.equal(selectsPilot(who("repair Test Two"), 90000005, "Test"), false, "an unknown suffix is not a second pilot");
+  assert.equal(selectsPilot(who("status Test, Test Two"), 90000005, "Test", names), true);
+  assert.equal(selectsPilot(who("status Test Two Pilot Beta"), 90000008, "Pilot Beta", names), true);
+  assert.equal(selectsPilot(who("status Test Two Pilot Beta"), 90000005, "Test", names), false);
+  const linked = who('repair Test Two, <url=showinfo:1377//90000005>Test</url>');
+  assert.equal(selectsPilot(linked, 90000005, "Test", names), true, "an explicit character link remains authoritative");
+  assert.equal(selectsPilot(linked, 90000007, "Test Two", names), true);
+});
+
 test("a dragged pilot link addresses that pilot by id, whatever its display text", () => {
   const selector = who(`repair <url=showinfo:1377//${PILOT_ID}>Someone Else</url>`);
   assert.deepEqual(selector, { everyone: false, characterIDs: [PILOT_ID], text: "" });

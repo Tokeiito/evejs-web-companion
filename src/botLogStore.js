@@ -52,6 +52,8 @@ const path = require("path");
 
 /** How many of a run's newest lines are kept once it outgrows the file. */
 const DEFAULT_MAX_LINES = 20000;
+/** Response-loss retries are immediate; retain only a bounded process-local delivery history. */
+const MAX_RECENT_BATCHES = 1024;
 
 /** The head line that says how much of a run's beginning is gone. */
 const TRIM_KIND = "trimmed";
@@ -93,6 +95,9 @@ function createBotLogStore(options = {}) {
   // because a BFF restart mid-run must not lose count and let the file grow
   // without end.
   const written = new Map();
+  // Only callers with an explicit batch id opt in. Run ids alone are not
+  // delivery identities: legacy recorders may legitimately reuse them.
+  const deliveredBatches = new Map();
   // Failures are counted rather than thrown, and reported by `stats()` so a
   // recorder that has quietly stopped working is still discoverable.
   let dropped = 0;
@@ -209,10 +214,15 @@ function createBotLogStore(options = {}) {
    *
    * Answers how many lines were written; never throws.
    */
-  function append(characterID, entries) {
+  function append(characterID, entries, { batchID } = {}) {
     const name = safeName(characterID);
     if (!name || !Array.isArray(entries) || entries.length === 0) {
       return 0;
+    }
+    const batchKey = typeof batchID === "string" && batchID.length > 0 && batchID.length <= 128
+      ? `${name}:${batchID}` : null;
+    if (batchKey !== null && deliveredBatches.has(batchKey)) {
+      return deliveredBatches.get(batchKey);
     }
     let text = "";
     let count = 0;
@@ -247,6 +257,12 @@ function createBotLogStore(options = {}) {
     // compaction that fails must not be reported as lines lost.
     if ((written.get(name) ?? 0) >= compactAt) {
       compact(name);
+    }
+    if (batchKey !== null) {
+      deliveredBatches.set(batchKey, count);
+      if (deliveredBatches.size > MAX_RECENT_BATCHES) {
+        deliveredBatches.delete(deliveredBatches.keys().next().value);
+      }
     }
     return count;
   }

@@ -1045,6 +1045,8 @@ export interface FleetCompanionObservation extends ScriptObservation {
    */
   readonly selfCharacterID?: number | null;
   readonly selfCharacterName?: string | null;
+  /** Current fleet names, used to distinguish overlapping named recipients. */
+  readonly fleetMemberNames?: readonly string[] | null;
   /**
    * What each hostile TYPE on this grid fights with and how it moves -- missile
    * or turret, optimal, falloff, attack range, orbit range, speed -- read from
@@ -1881,6 +1883,8 @@ export interface CompanionLadderMemory {
    * in every fight after it, for the rest of the session.
    */
   readonly droneRotation: CompanionDroneRotationMemory;
+  /** The role whose drones a pending rotation may relaunch. */
+  readonly droneRotationRole?: CompanionDroneRole | null;
   /**
    * When this pilot last recalled its combat drones to swap them for a better
    * size, or null. `shouldSwitch`'s minimum interval reads it, so a commander
@@ -2443,6 +2447,7 @@ export function freshLadderMemory(): CompanionLadderMemory {
     lockPending: null,
     preLocked: [],
     droneRotation: emptyCompanionDroneRotation(),
+    droneRotationRole: null,
     droneSizeSwitchAtMs: null,
     droneSizeRecalledIDs: [],
     droneAssistLit: [],
@@ -3125,6 +3130,7 @@ function decideCompanionStep(
     lastWarpedToID: memory.lastWarpedToID,
     orderedLeaveRecall: memory.orderedLeaveRecall,
     droneRotation: memory.droneRotation,
+    droneRotationRole: memory.droneRotationRole ?? null,
     droneSizeSwitchAtMs: memory.droneSizeSwitchAtMs,
     droneSizeRecalledIDs: memory.droneSizeRecalledIDs,
     droneAssistLit: memory.droneAssistLit,
@@ -5747,7 +5753,7 @@ function withStandingChatOrders(
     // somebody else is still consumed by the cursor above: it was heard, and it
     // was not for this pilot.
     if (command.kind === "status" || command.kind === "repair") {
-      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null)) {
+      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null, obs.fleetMemberNames ?? null)) {
         next = command.kind === "status"
           ? { ...next, supply: { ...next.supply, statusAsked: true } }
           : { ...next, repairOrderedAtMs: at };
@@ -5757,7 +5763,7 @@ function withStandingChatOrders(
     // A newer `rearm` replaces a trip under way: the commander named another
     // station, and the last thing said wins.
     if (command.kind === "rearm") {
-      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null)) {
+      if (selectsPilot(command.who, obs.selfCharacterID ?? null, obs.selfCharacterName ?? null, obs.fleetMemberNames ?? null)) {
         next = {
           ...next,
           rearm: {
@@ -6583,6 +6589,7 @@ function decideFlee(
     // everything this ship controls before it commits to a warp, whichever rung
     // launched it.
     droneRotation: emptyCompanionDroneRotation(),
+    droneRotationRole: null,
     // A rejoin under way is over: the return leg after this flee starts its own.
     rejoin: null,
   };
@@ -6651,7 +6658,7 @@ function withRepairOrder(
   };
   // As a flee's latch does: the rotation and a rejoin under way end here, and
   // the leg recalls every drone before it warps.
-  return { ...cleared, flee: ordered, droneRotation: emptyCompanionDroneRotation(), rejoin: null };
+  return { ...cleared, flee: ordered, droneRotation: emptyCompanionDroneRotation(), droneRotationRole: null, rejoin: null };
 }
 
 /**
@@ -10133,14 +10140,21 @@ function rotateHurtDrone(
   role: CompanionDroneRole | null,
   nowMs: number,
 ): { readonly decision: CompanionDecision | null; readonly memory: CompanionLadderMemory } {
-  const record = memory.droneRotation;
+  let record = memory.droneRotation;
+  if (memory.droneRotationRole != null && memory.droneRotationRole !== role) {
+    // A rep call can replace a fight while a hurt combat drone is aboard.
+    // Keep this fight's caps and hot IDs, but let the new role launch its own
+    // flight rather than completing the old role's relaunch.
+    record = { ...record, homeward: [], aboard: [], launching: [] };
+    memory = { ...memory, droneRotation: record, droneRotationRole: role };
+  }
   // A fight that is over takes the rotation with it: a drone coming home now
   // is coming home for good, and the next fight starts with fresh counts.
   // Only a confident `false` ends it -- `null` is a snapshot that stumbled.
   if (obs.hostileOnGrid === false || role === null) {
     const clean = !rotationBusy(record) && Object.keys(record.rotations).length === 0 &&
       Object.keys(record.recalledAtMs).length === 0;
-    return { decision: null, memory: clean ? memory : { ...memory, droneRotation: emptyCompanionDroneRotation() } };
+    return { decision: null, memory: clean ? memory : { ...memory, droneRotation: emptyCompanionDroneRotation(), droneRotationRole: null } };
   }
   // A new rotation only on a grid we can see; one under way is seen through.
   if (obs.hostileOnGrid !== true && !rotationBusy(record)) {
@@ -10149,7 +10163,7 @@ function rotateHurtDrone(
   const inputs = rotationInputs(obs, record, role, nowMs);
   const step = decideCompanionDroneRotation(inputs);
   noteTrace("drones", dronesTrace(obs, inputs, step, nowMs));
-  const next: CompanionLadderMemory = { ...memory, droneRotation: step.memory };
+  const next: CompanionLadderMemory = { ...memory, droneRotation: step.memory, droneRotationRole: role };
   const action = step.action;
   if (action.kind === "recall") {
     const many = action.droneIDs.length > 1;
@@ -11812,6 +11826,7 @@ export function createFleetCompanion(deps: FleetCompanionDeps): FleetCompanionCo
           // can undo - so the honest state is "no rotation", not a
           // half-remembered one.
           droneRotation: emptyCompanionDroneRotation(),
+          droneRotationRole: null,
           droneSizeSwitchAtMs: null,
           droneSizeRecalledIDs: [],
           droneAssistLit: [],

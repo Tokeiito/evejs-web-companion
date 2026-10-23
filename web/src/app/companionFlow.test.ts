@@ -246,6 +246,7 @@ function chatHarness(
     readonly chatEntries?: readonly unknown[];
     /** The station the roster says the commander is docked in; absent says nothing. */
     readonly commanderStationID?: number;
+    readonly characterNames?: Readonly<Record<number, string>>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -325,6 +326,10 @@ function chatHarness(
     if (path === "/api/bridge/space/snapshot") return spaceBody();
     if (path === "/api/bridge/targets") return { ok: true, targetIDs: [], notifications: [] };
     if (path === "/api/bridge/bound-fleet") return boundFleetBody();
+    if (path === "/api/names" && options.characterNames !== undefined) {
+      const names = Object.fromEntries(Object.entries(options.characterNames).map(([id, name]) => [`character:${id}`, name]));
+      return { ok: true, names, unresolved: [] };
+    }
     // LOCAL only, deliberately -- see flow.ts's own comment on the chat read:
     // fleet chat is unreachable on this server, so nothing here should ever
     // be asked for anything else.
@@ -700,6 +705,24 @@ test("a chat order inside FLEET_BROADCAST_TTL_MS reaches the loop and is obeyed"
       "chat",
       "and the readout must attribute it to chat, not the fleet's own ladder",
     );
+  } finally {
+    flow.stopFleetCompanion();
+  }
+});
+
+test("the complete resolved roster disambiguates a whitespace list of pilot names through the real observation", async () => {
+  const { store, flow, calls } = chatHarness({
+    humanMemberCharacterID: OWN_CHARACTER_ID,
+    characterNames: { [OWN_CHARACTER_ID]: "Test", [ALLOWED_CHAT_SENDER]: "Test Two" },
+    chatEntries: [{ characterID: ALLOWED_CHAT_SENDER, characterName: "Test Two",
+      message: "status Test Two Test", createdAtMs: Date.now() }],
+  });
+  store.apply({ type: "character/online", character: { characterID: OWN_CHARACTER_ID, characterName: "Test",
+    stationID: null, structureID: null, solarSystemID: SOLAR_SYSTEM_ID, corporationID: null }, station: null });
+  try {
+    await flow.startFleetCompanion(DEFAULT_FLEET_COMPANION_REQUEST);
+    await waitFor(() => calls.includes("/api/bridge/chat/local/send"), "the addressed status reply");
+    assert.equal(store.names.get().resolved[`character:${ALLOWED_CHAT_SENDER}`], "Test Two");
   } finally {
     flow.stopFleetCompanion();
   }

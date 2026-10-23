@@ -1497,6 +1497,46 @@ test("resume rebuilds a companion from its persisted request alone — no librar
   assert.equal(after.claimedBy(140000002), listed[0].botID);
 });
 
+test("resume preserves an approved pre-upgrade companion with the real setup decoder", async () => {
+  const { decodeCompanionSetupValue } = await import("../web/src/bots/companionRunPolicy.ts");
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  const started = await before.start(COMPANION_START);
+  assert.equal(started.ok, true);
+  const approved = readRosterFile(rosterPath)[0];
+  const log = [];
+  const after = makeHost({
+    log, persistPath: rosterPath, loadAccount: async () => ({ ...ACCOUNT }),
+    loadStack: async () => ({ ...await makeFakeStack(log)(), decodeCompanionSetupValue }),
+  });
+  await after.resume();
+  const [resumed] = after.list(ACCOUNT.accountID);
+  assert.equal(resumed.status, "running", resumed.why);
+  assert.equal(resumed.scriptHash, approved.scriptHash);
+  assert.equal(resumed.expiresAt, approved.expiresAt);
+  assert.deepEqual(readRosterFile(rosterPath)[0].request, COMPANION_REQUEST);
+  await after.stop(resumed.botID, ACCOUNT.accountID);
+});
+
+test("legacy identity compatibility still refuses an edited approved companion", async () => {
+  const { decodeCompanionSetupValue } = await import("../web/src/bots/companionRunPolicy.ts");
+  const rosterPath = tempRosterPath();
+  const before = makeHost({ persistPath: rosterPath });
+  await before.start(COMPANION_START);
+  const raw = JSON.parse(fs.readFileSync(rosterPath, "utf8"));
+  raw.bots[0].request.droneHealthFloor = 0.6;
+  fs.writeFileSync(rosterPath, JSON.stringify(raw), "utf8");
+  const log = [];
+  const after = makeHost({
+    log, persistPath: rosterPath, loadAccount: async () => ({ ...ACCOUNT }),
+    loadStack: async () => ({ ...await makeFakeStack(log)(), decodeCompanionSetupValue }),
+  });
+  await after.resume();
+  assert.equal(after.list(ACCOUNT.accountID)[0].status, "error");
+  assert.equal(after.claimedBy(COMPANION_START.characterID), null);
+  assert.equal(log.some(([event]) => event === "selectCharacter"), false);
+});
+
 test("resume refuses a persisted companion request that no longer decodes", async () => {
   const rosterPath = tempRosterPath();
   const before = makeHost({ persistPath: rosterPath });

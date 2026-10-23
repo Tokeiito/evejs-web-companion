@@ -466,7 +466,11 @@ export function planLaunch(
   const buckets = new Map<number, TypeBucket>();
   for (const stack of bay) {
     const f = facts.get(stack.typeID);
-    const quantity = Number.isFinite(stack.quantity) ? Math.max(0, Math.floor(stack.quantity)) : 0;
+    // Inventory represents a recovered singleton with quantity -1. It is one
+    // available drone, just as in the supply and rearm counts.
+    const quantity = Number.isFinite(stack.quantity)
+      ? stack.quantity < 0 ? 1 : Math.floor(stack.quantity)
+      : 0;
     if (f === undefined || quantity <= 0) {
       continue;
     }

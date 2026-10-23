@@ -1625,14 +1625,15 @@ export async function callSquadPrimary(
 
 /**
  * Ship a batch of flight-recorder lines to THIS character's log (the BFF keys
- * on the held session's character, so there is nothing to name here). Fire and
- * forget by design: the caller drops the batch if this throws.
+ * on the held session's character, so there is nothing to name here). A retry
+ * keeps its batchID so a lost response cannot rotate the same run twice.
  */
 export async function appendBotLog(
   entries: readonly unknown[],
   options: ApiOptions = {},
+  batchID?: string,
 ): Promise<void> {
-  await postJson("/api/bots/bot-log", { entries }, options);
+  await postJson("/api/bots/bot-log", { entries, ...(batchID === undefined ? {} : { batchID }) }, options);
 }
 
 /** One character's bot log — the current run, or one of the two before it. */

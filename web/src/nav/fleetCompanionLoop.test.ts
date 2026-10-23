@@ -6701,7 +6701,47 @@ test("a repair order is issued once, not re-sent every tick", () => {
   assert.notEqual(second.action.kind, "engageDrones");
 });
 
-for (const role of ["combat", "repair"] as const) {
+  test("a heal call during a combat-drone rotation launches repair drones instead of relaunching combat drones", async () => {
+    let nowMs = 1_000_000;
+    let observation = mixedBayObs({
+      snapshot: gridWithEntities([TACKLE, LOGI]),
+      myDroneIDs: [DRONE_A],
+      combatDroneIDs: [DRONE_A],
+      myDrones: [{ itemID: DRONE_A, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 }],
+    });
+    const issued: FleetCompanionAction[] = [];
+    const controller = createFleetCompanion({
+      observe: async () => observation,
+      issue: async (action) => { issued.push(action); },
+      sleep: async () => {},
+      now: () => nowMs,
+    });
+    controller.start(WITH_DRONES);
+    await controller.tick();
+    assert.deepEqual(issued, [{ kind: "recallDrones", droneIDs: [DRONE_A] }]);
+
+    // The drone is aboard as the fleet asks for repairs. A rotation must not
+    // keep the repair flight waiting or send its old combat drone out again.
+    observation = mixedBayObs({
+      snapshot: gridWithEntities([TACKLE, LOGI]),
+      fleetBroadcast: fleetBroadcast("HealShield", LOGI),
+      lockedTargetIDs: [LOGI],
+      myDrones: [],
+      droneBayItemIDs: [DRONE_A, DRONE_BAY_STACK, LOGI_BAY_STACK],
+      combatDroneBayItemIDs: [DRONE_A, DRONE_BAY_STACK],
+    });
+    nowMs += 2_000;
+    await controller.tick();
+    assert.deepEqual(issued[1], { kind: "launchDrones", droneItemIDs: [LOGI_BAY_STACK] });
+    nowMs += BLIND_HOLD_MS;
+    await controller.tick();
+    assert.deepEqual(issued, [
+      { kind: "recallDrones", droneIDs: [DRONE_A] },
+      { kind: "launchDrones", droneItemIDs: [LOGI_BAY_STACK] },
+    ], "the old combat rotation never relaunches its drone while repairs are wanted");
+  });
+
+  for (const role of ["combat", "repair"] as const) {
   test(`${role} drones engage the same target again after a complete hurt-drone rotation`, () => {
     const targetID = role === "combat" ? TACKLE : LOGI;
     const droneID = role === "combat" ? DRONE_A : LOGI_DRONE_OUT;
@@ -6732,6 +6772,28 @@ for (const role of ["combat", "repair"] as const) {
     assert.notEqual(continuing.action.kind, "engageDrones");
   });
 }
+
+  test("a repair-drone rotation yields to combat when the repair call ends, preserving the fight's rotation counts", () => {
+    const nowMs = 1_000_000;
+    const recalled = decideCompanionAction(WITH_DRONES, mixedBayObs({
+      snapshot: gridWithEntities([TACKLE, LOGI]),
+      fleetBroadcast: fleetBroadcast("HealShield", LOGI),
+      myDroneIDs: [LOGI_DRONE_OUT],
+      logisticDroneIDs: [LOGI_DRONE_OUT],
+      myDrones: [{ itemID: LOGI_DRONE_OUT, shieldRatio: 0.4, armorRatio: 1, hullRatio: 1 }],
+    }), undefined, nowMs);
+    assert.deepEqual(recalled.action, { kind: "recallDrones", droneIDs: [LOGI_DRONE_OUT] });
+    const combat = decideCompanionAction(WITH_DRONES, mixedBayObs({
+      snapshot: gridWithEntities([TACKLE, LOGI]),
+      myDrones: [],
+      droneBayItemIDs: [DRONE_BAY_STACK, LOGI_BAY_STACK, LOGI_DRONE_OUT],
+      logisticDroneBayItemIDs: [LOGI_BAY_STACK, LOGI_DRONE_OUT],
+    }), recalled.memory, nowMs + 2_000);
+    assert.deepEqual(combat.action, { kind: "launchDrones", droneItemIDs: [DRONE_BAY_STACK] });
+    assert.equal(combat.memory.droneRotation.rotations[String(LOGI_DRONE_OUT)], 1);
+    assert.equal(combat.memory.droneRotation.recalledAtMs[String(LOGI_DRONE_OUT)], nowMs);
+    assert.equal(rotationBusy(combat.memory.droneRotation), false);
+  });
 
 test("a recalled combat flight observed while supervision is unreadable gets a fresh order on return", () => {
   const world = (overrides: Partial<FleetCompanionObservation> = {}) => droneObs({
