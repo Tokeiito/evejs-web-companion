@@ -6656,7 +6656,7 @@ const collectCustoms: MacroDecider = (step, obs, mem) => {
 // read per parked ship while this block runs), never picked by the player -
 // the hull's own bays say what it is for. The hull it leaves is noted on the
 // run's board exactly as refit-ship notes it, so board-previous-ship goes back.
-const boardPlanetaryHauler: MacroDecider = (_step, obs, mem, board) => {
+const boardPlanetaryHauler: MacroDecider = (step, obs, mem, board) => {
   const phase = "Changing ships";
   const activeShipID = obs.activeShipID ?? null;
   const haulers = obs.planetaryHaulerShipIDs ?? null;
@@ -6678,8 +6678,11 @@ const boardPlanetaryHauler: MacroDecider = (_step, obs, mem, board) => {
     if (haulers.includes(activeShipID)) {
       return tick(WAIT, "This ship has a planetary hold, so it hauls from here.", phase, { kind: "done" });
     }
+    const boardingStationID = num(mem, "boardingStationID") ?? obs.homeStationID ?? null;
+    const boardingDockableKind = mem["boardingDockableKind"] === "structure" || mem["boardingDockableKind"] === "station"
+      ? mem["boardingDockableKind"] : obs.homeDockableKind ?? "station";
     const homeMem = (mem["home"] as MacroMemory | undefined) ?? {};
-    const home = scriptTravelHome(obs, homeMem);
+    const home = scriptTravelHome({ ...obs, homeStationID: boardingStationID, homeDockableKind: boardingDockableKind }, homeMem, step.id);
     if (home.outcome.kind === "done") {
       // Stopped short of a station: travel says so only when there is nothing to fly.
       return tick(WAIT, "Not docked - ships are changed in a station.", phase, {
@@ -6687,7 +6690,21 @@ const boardPlanetaryHauler: MacroDecider = (_step, obs, mem, board) => {
         reason: "Dock where your planetary hauler is parked first.",
       });
     }
-    return { ...home, phase: home.outcome.kind === "blocked" ? home.phase : "Flying home to board the hauler", nextMem: { ...mem, home: home.nextMem } };
+    return { ...home, phase: home.outcome.kind === "blocked" ? home.phase : "Flying home to board the hauler", nextMem: {
+      ...mem, boardingStationID, boardingDockableKind, home: home.nextMem,
+    } };
+  }
+  // A failed trip may take an emergency dock elsewhere. That makes the ship
+  // safe, but boarding there would leave the original hull away from home.
+  // Only a run that flew here needs this check; a run starting docked boards here.
+  const boardingStationID = num(mem, "boardingStationID");
+  if (boardingStationID !== null && !dockedAt(obs.flightStatus, {
+    kind: mem["boardingDockableKind"] === "structure" ? "structure" : "station", id: boardingStationID,
+  })) {
+    return tick(WAIT, "Docked safely, but the boarding destination could not be reached.", phase, {
+      kind: "blocked",
+      reason: "The trip home failed and the ship docked elsewhere for safety. Dock at home before boarding the planetary hauler.",
+    });
   }
   const hangar = obs.stationHangar ?? null;
   if (hangar === null || activeShipID === null || haulers === null) {

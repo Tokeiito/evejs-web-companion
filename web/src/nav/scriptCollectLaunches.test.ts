@@ -326,6 +326,46 @@ test("board-planetary-hauler: in space in another ship -> flies home to board th
   assert.deepEqual(there.action, { kind: "boardShip", shipID: 5002 });
 });
 
+test("board-planetary-hauler: emergency docking elsewhere keeps the ship safe without boarding there", () => {
+  const home = 60000004;
+  const refuge = 60000005;
+  const landing = boardHauler(haulerStep, obs({
+    activeShipID: 5001, planetaryHaulerShipIDs: [], homeStationID: home,
+    travel: { status: "paused", destinationStationID: home, remainingJumps: 2, failureReason: "No route to home." },
+    snapshot: snapshot([entity({ itemID: refuge, kind: "station", position: { x: 1000, y: 0, z: 0 } })]),
+  }), {}, NB);
+  assert.deepEqual(landing.action, { kind: "dock", stationID: refuge }, "the emergency door remains available");
+  const there = boardHauler(haulerStep, docked({
+    flightStatus: flight({ inSpace: false, docked: true, stationID: refuge }),
+    activeShipID: 5001, planetaryHaulerShipIDs: [5002], stationHangar: hangar, homeStationID: home,
+  }), landing.nextMem, NB);
+  assert.equal(there.outcome.kind, "blocked", "a safe refuge is not the station chosen for reshipping");
+  assert.equal(there.action.kind, "wait");
+  assert.equal(there.boardPatch, undefined, "the original hull is never left at the wrong station");
+  if (there.outcome.kind === "blocked") assert.match(there.outcome.reason, /home.*board|board.*home/i);
+});
+
+test("board-planetary-hauler: a run starting docked boards here even when home is elsewhere", () => {
+  const t = boardHauler(haulerStep, docked({
+    stationHangar: hangar, activeShipID: 5001, planetaryHaulerShipIDs: [5002], homeStationID: 60000005,
+  }), {}, NB);
+  assert.deepEqual(t.action, { kind: "boardShip", shipID: 5002 });
+  assert.deepEqual(t.boardPatch, { shipBeforeRefit: 5001 });
+});
+
+test("board-planetary-hauler: arriving at the intended home structure allows boarding", () => {
+  const home = 1000000000001;
+  const flying = boardHauler(haulerStep, obs({
+    activeShipID: 5001, planetaryHaulerShipIDs: [], homeStationID: home, homeDockableKind: "structure",
+  }), {}, NB);
+  const there = boardHauler(haulerStep, docked({
+    flightStatus: flight({ inSpace: false, docked: true, stationID: null, structureID: home }),
+    activeShipID: 5001, planetaryHaulerShipIDs: [5002], stationHangar: hangar, homeStationID: home, homeDockableKind: "structure",
+  }), flying.nextMem, NB);
+  assert.deepEqual(there.action, { kind: "boardShip", shipID: 5002 });
+  assert.deepEqual(there.boardPatch, { shipBeforeRefit: 5001 });
+});
+
 test("board-planetary-hauler: in space in another ship with no home known -> blocked, never a guessed station", () => {
   const t = boardHauler(haulerStep, obs({ activeShipID: 5001, planetaryHaulerShipIDs: [], homeStationID: null } as never), {}, NB);
   assert.equal(t.outcome.kind, "blocked");
