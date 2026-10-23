@@ -10,7 +10,11 @@ async function createClientRowDescriptor({ provider }) {
   const layouts = await createClientRowDescriptorLayout({ provider });
   const runtime = await provider.ready(), values = runtime.values;
   const module = values.global("_create_row_descriptor_protocol").call();
-  const Descriptor = module.getAttr("Descriptor"), provenance = new WeakMap();
+  // Native rows can retain a header after its original wire row is released.
+  // Keep its JS handle and wire metadata together for this owner's lifetime:
+  // runtime wrapper interning is weak, so a WeakMap loses still-live headers.
+  // Retaining the handle also prevents native address reuse; no schema interning.
+  const Descriptor = module.getAttr("Descriptor"), provenance = new Map();
   const builtins = values.global("__builtin__"), list = builtins.getAttr("list"), tuple = builtins.getAttr("tuple");
   const getters = new Map([
     ["eve.common.script.sys.eveCfg.StackSize", module.getAttr("StackSize")],

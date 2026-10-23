@@ -2380,8 +2380,9 @@ def _attach_inventory_session_checks(owner, context):
 
 def _attach_inventory_container_types(owner, checks):
     # Genuine constructor/wrapper field phase on the SAME existing broker.
-    # Listing/item-change storage, native invByID admission and synchronous
-    # password/RPC/service continuations remain separate capabilities.
+    # Native fields are canonical storage for the managed async producer.
+    # Full original notice/Prime, invByID admission and synchronous password/
+    # RPC/service continuations remain separate capabilities.
     import types
     existing = getattr(owner, 'inventory_container_types', None)
     if existing is not None:
@@ -2457,6 +2458,42 @@ def _attach_inventory_container_types(owner, checks):
                 guard.moniker = None
             broker.inventories = {}
 
+        def set_self_item(guard, item):
+            # _SetItemData971-974 AFTER the real async GetSelfInvItem reply.
+            # Keep completed assignments if a later field read fails.
+            guard._item = item
+            guard._itemID = guard._item.itemID
+            guard._typeID = guard._item.typeID
+
+        def next_value(iterator):
+            try:
+                return (True, iterator.next())
+            except StopIteration:
+                return (False, None)
+
+        def new_listing():
+            return owner.rowset_types.crowset.CRowset(broker.GetItemHeader(), [])
+
+        def finish_listing(guard, res, flags, many, has_type, type_id):
+            # Source port of cache-only List1153-1165/ListByFlags1188-1204.
+            # Caller owns their different header demand order. No fake RPC.
+            for item_id in guard.cachedItems.iterkeys():
+                item = guard.cachedItems[item_id]
+                if many:
+                    if item.flagID not in flags:
+                        continue
+                elif flags is not None and item.flagID != flags:
+                    continue
+                if has_type and item.typeID != type_id:
+                    continue
+                if len(item) != len(res.header):
+                    guard.LogError('Invalid Item', item)
+                    continue
+                res.append(item)
+            return res
+
+        result.set_self_item, result.next_value = set_self_item, next_value
+        result.new_listing, result.finish_listing = new_listing, finish_listing
         result.key, result.construct, result.publish = key, construct, publish
         result.unpublish, result.invalidate_container_fields = unpublish, invalidate_container_fields
         result.complete = True

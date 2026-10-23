@@ -5714,13 +5714,14 @@ function createGamePortPilots({
     };
     const typeID = filterValue(kwargs.typeID);
     // Original List1138 consumes typeID/securityCode/other kwargs locally, fetching all types with only flag.
-    if (method === "List") return entry.inventory.list(object.container, filterValue(kwargs.flag), () => sent({ ...form, kwargs: { flag: kwargs.flag } }), typeID, selfRead);
+    if (method === "List") return entry.inventory.list(object.container, filterValue(kwargs.flag), () => sent({ ...form, kwargs: { flag: kwargs.flag } }), typeID, selfRead, { flag: kwargs.flag, typeID: kwargs.typeID });
     const rawFlags = itemsOf(kwargs.flags), flags = rawFlags.map(filterValue);
     // Original ListByFlags1174 sends only uncachedFlags, preserving their input order, duplicates and None.
-    return entry.inventory.listByFlags(object.container, flags, (unlisted) => {
+    return entry.inventory.listByFlags(object.container, flags, (unlisted, uncachedWire = null) => {
+      if (uncachedWire !== null) return sent({ ...form, kwargs: { flags: { type: "list", items: uncachedWire } } });
       const cold = new Set(unlisted);
       return sent({ ...form, kwargs: { flags: { type: "list", items: rawFlags.filter((_, i) => cold.has(flags[i])) } } });
-    }, typeID, selfRead);
+    }, typeID, selfRead, { flags: rawFlags, typeID: kwargs.typeID });
   }
 
   /** The rows of what the pilot's containers list: the inventory cache's, and those listed on a handle of no container held. */
@@ -5821,7 +5822,7 @@ function createGamePortPilots({
     const objectID = answeredObject(entry.session, "invbroker", answer);
     if (objectID && policy) {
       const scope = policy.receipt(objectID, remoteObjectReference(answer), key);
-      return Object.freeze({ objectID, dispatch: scope.dispatch, nativeContainer: scope.container, publish: scope.publish, unpublish: scope.unpublish });
+      return Object.freeze({ objectID, dispatch: scope.dispatch, nativeContainer: scope.container, storage: scope.storage, publish: scope.publish, unpublish: scope.unpublish });
     }
     return objectID;
   }

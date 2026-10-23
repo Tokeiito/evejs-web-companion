@@ -4,13 +4,14 @@ const { nativeSessionScalar } = require("./clientSessionContext");
 const { projectNativeNodeAddress } = require("./clientMachoAddress");
 const { getDecodedNumberKind, marshalDecode } = require("../gameProtocol/marshal");
 const { long, encodeClient } = require("./clientMarshal");
+const { createClientInventoryContainerStorage } = require("./clientInventoryContainerStorage");
 
 /** Original native inventory connections, owned by actual receipt holders.
  * The session registry is weak; neither it nor a per-N callback roots them.
  * Native container constructor fields are real; listing/notice storage and the
  * original synchronous RPC scheduler remain separate capabilities.
  */
-function createClientInventorySessionChecks({ runtime, module, context, assertCurrent }) {
+function createClientInventorySessionChecks({ runtime, module, context, assertCurrent, wireRows, inventoryHeader }) {
   const receipts = new WeakMap(), publicValues = new WeakMap(), publicFailures = new WeakMap(), converting = new WeakSet();
   function current() { assertCurrent(); context.assertCurrent(); }
   const containers = module.getAttr("containers");
@@ -120,10 +121,13 @@ function createClientInventorySessionChecks({ runtime, module, context, assertCu
           const record = receipt(objectID, reference);
           record.getAttr("SetSessionCheck").call(policy);
           const container = key === null ? null : containers.getAttr("construct").call(record, key);
+          const storage = container === null ? null : createClientInventoryContainerStorage({
+            runtime, module: containers, guard: container, wireRows, inventoryHeader, assertCurrent: current,
+          });
           // The dispatch callback retains this receipt owner, including its
           // actual public-attribute object, rather than only an N= string.
           const scope = {
-            record, reference, container,
+            record, reference, container, storage,
             publish() { current(); if (container) containers.getAttr("publish").call(container); },
             unpublish(detach = false) { return container ? containers.getAttr("unpublish").call(container, detach).truth() : false; },
             check() { current(); return module.getAttr("perform_in_context").call(context.module, scope.record); },

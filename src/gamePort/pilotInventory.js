@@ -33,8 +33,8 @@ const { InventoryItems } = require("./inventoryItems");
 // sequence: a remote DBRow set's allocator-dependent iteration is a separate
 // boundary (CCP PyRowSet.cpp hashes object pointers), not an item-ID sort.
 // Native guards now own their genuine constructor/wrapper fields on the same
-// broker. This managed items/listed storage remains the active authority until
-// the coordinated native listing/notice port; native invByID is not populated.
+// broker. Their actual native dict/set/private fields own production storage;
+// managed code schedules RPC/notice work. Native invByID is not populated yet.
 
 /** The columns of an inventory row by their index in it, as a change is given (const.ixItemID ... ixCustomInfo). */
 const COLUMN_BY_IX = ["itemID", "typeID", "ownerID", "locationID", "flagID", "quantity", "groupID", "categoryID", "customInfo"];
@@ -113,8 +113,15 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
     // The original native constructor has completed; only the current cache
     // generation publishes its guard on this SAME broker's inventories field.
     objectID?.publish?.();
-    if (!containers.has(key)) {
-      containers.set(key, { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID, items: new InventoryItems(), listed: new Set(), work: Promise.resolve() });
+    if (!containers.has(key) || containers.get(key).storage !== objectID?.storage) {
+      const storage = objectID?.storage;
+      const container = { location: num(Number(location)), owner: owner === "" ? null : num(Number(owner)), objectID,
+        storage, items: storage?.items ?? new InventoryItems(), listed: storage?.listed ?? new Set(), work: Promise.resolve() };
+      if (storage) Object.defineProperties(container, {
+        selfItem: { get: () => storage.self(), set: row => storage.setSelf(row) },
+        ownItem: { get: () => storage.own(), set: row => storage.setOwn(row) },
+      });
+      containers.set(key, container);
     } else {
       containers.get(key).objectID = objectID;
     }
@@ -177,17 +184,22 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
       const fields = fieldsOf(row);
       if (fields === null) continue;
       container.items.set(itemKey(fields.itemID), row);
-      container.listed.add(fields.flagID);
+      container.listed.add(fields.flagID, row);
     }
   };
 
   /** Original _SetItemData keeps itemID/typeID/item together, independently of cachedItems. */
   function selfItem(key, ask) {
-    const container = containers.get(key);
+    return selfItemOf(containers.get(key), ask, key);
+  }
+  function selfItemOf(container, ask, key) {
     if (!container) return ask();
     if (container.selfItem !== undefined) return Promise.resolve(container.selfItem);
     if (container.selfWork) return container.selfWork;
     const work = Promise.resolve().then(ask).then((row) => {
+      // An already-started original _SetItemData publishes its reply on the
+      // CAPTURED guard, even if it was unpublished while RPC yielded.
+      if (container.storage) { container.selfItem = row; return container.selfItem; }
       const own = fieldsOf(row);
       if (!own || own.itemID == null || own.typeID == null) throw new Error("The inventory did not return its own item and type.");
       if (containers.get(key) === container) container.selfItem = row;
@@ -319,18 +331,22 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
      * Undefined alone means no type filter. Where no container
      * is held for the key, it is asked and nothing is kept.
      */
-    list(key, flag, ask, typeID, askSelf = null) {
+    list(key, flag, ask, typeID, askSelf = null, wire = null) {
       const container = containers.get(key);
       if (!container) return ask();
       return inTurn(container, async () => {
-        if (!container.listed.has(flag)) {
+        const storage = container.storage;
+        const nativeFlag = wire?.flag === undefined ? flag === undefined ? null : flag : wire.flag;
+        if (!container.listed.has(storage ? nativeFlag : flag)) {
           const answer = await ask();
-          if (containers.get(key) !== container) return answer;
+          if (!storage && containers.get(key) !== container) return answer;
           takeListed(container, answer);
           // List1145 evaluates self.itemID after the remote listing, even when that listing is empty.
-          if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
-          container.listed.add(flag);
+          if ((storage ? storage.needsItemID() : [CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location)) && askSelf) await selfItemOf(container, askSelf, key);
+          container.listed.add(storage ? nativeFlag : flag);
+          storage?.logListed();
         }
+        if (storage) return storage.finish(await storage.begin(), nativeFlag, false, wire ? wire.typeID : typeID);
         return answerOf(container, (fields) => (flag === null || fields.flagID === flag) && (typeID === undefined || fields.typeID === typeID));
       });
     },
@@ -338,19 +354,24 @@ function createPilotInventory({ rowFields, session, createItemHeader = null }) {
      * invCacheContainer.ListByFlags(flags): the flags not listed yet asked for (`ask(unlisted)`), alone, and the
      * flags' items answered from what the container holds.
      */
-    listByFlags(key, flags, ask, typeID, askSelf = null) {
+    listByFlags(key, flags, ask, typeID, askSelf = null, wire = null) {
       const container = containers.get(key);
       if (!container) return ask(flags);
       return inTurn(container, async () => {
-        if (flags.length === 0) return { type: "list", items: [] };
-        const unlisted = flags.filter((flag) => !container.listed.has(flag));
+        const storage = container.storage, result = storage ? await storage.begin() : null;
+        const nativeFlags = wire?.flags ?? flags;
+        if (flags.length === 0) return storage ? storage.finish(result, nativeFlags, true, wire ? wire.typeID : typeID) : { type: "list", items: [] };
+        const unlisted = flags.filter((flag, i) => !container.listed.has(storage ? nativeFlags[i] : flag));
+        const uncachedWire = storage ? nativeFlags.filter(flag => !container.listed.has(flag)) : null;
         if (unlisted.length > 0) {
-          const answer = await ask(unlisted);
-          if (containers.get(key) !== container) return answer;
+          const answer = await ask(unlisted, uncachedWire);
+          if (!storage && containers.get(key) !== container) return answer;
           takeListed(container, answer);
-          if ([CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location) && askSelf) await selfItem(key, askSelf);
-          for (const flag of unlisted) container.listed.add(flag);
+          if ((storage ? storage.needsItemID() : [CONTAINER_HANGAR, CONTAINER_CORP_MARKET, CONTAINER_CAPSULEER_DELIVERIES].includes(container.location)) && askSelf) await selfItemOf(container, askSelf, key);
+          for (const flag of uncachedWire ?? unlisted) container.listed.add(flag);
+          storage?.logListed();
         }
+        if (storage) return storage.finish(result, nativeFlags, true, wire ? wire.typeID : typeID);
         return answerOf(container, (fields) => flags.includes(fields.flagID) && (typeID === undefined || fields.typeID === typeID));
       });
     },
