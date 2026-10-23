@@ -69,3 +69,22 @@ test("through a transport that does not carry the read, there are no tokens to b
   assert.equal(await readRedeemTokens(async () => { throw refused; }), null);
   await assert.rejects(readRedeemTokens(async () => { throw new Error("down"); }), /down/);
 });
+
+test("training certificates are rejected before an ordinary claim, including mixed selections", async () => {
+  const [certificate, ordinary] = decodeRedeemTokens(crowset([
+    fields({ tokenID: 101, typeID: 63188, quantity: 1, soulbound: 1 }),
+    fields({ tokenID: 102, typeID: 34, quantity: 10 }),
+  ]))!;
+  const calls: unknown[] = [];
+  const act = async (...call: unknown[]): Promise<JsonValue> => {
+    calls.push(call);
+    return { type: "dict", entries: [["errors", { type: "list", items: [] }]] };
+  };
+  for (const selection of [[certificate!], [ordinary!, certificate!]]) {
+    await assert.rejects(claimRedeemTokens(act, selection, 90000001, true), /EVE client/);
+    assert.equal(calls.length, 0, "no part of an unsupported selection may be redeemed");
+  }
+  await claimRedeemTokens(act, [ordinary!], 90000001, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((calls[0] as unknown[])[2], [[[102, null]], 90000001]);
+});

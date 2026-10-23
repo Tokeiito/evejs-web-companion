@@ -9,12 +9,13 @@
 // once it is answered, as the client does (127).
 
 import type { Ask } from "./ask.ts";
-import { decodeRedeemOutcome, tokenKey, type RedeemOutcome, type RedeemToken } from "./redeem.ts";
+import { canRedeemOrdinarily, decodeRedeemOutcome, tokenKey, TRAINING_CERTIFICATE_NOTICE, type RedeemOutcome, type RedeemToken } from "./redeem.ts";
 
 /** Redeems `tokens` for the character, to its home station or where it is docked. Fails as the call fails. */
 export async function claimRedeemTokens(act: Ask, tokens: readonly RedeemToken[], characterID: number, useHomeStation: boolean): Promise<RedeemOutcome> {
   if (tokens.length === 0) throw new Error("Select something to redeem first.");
   if (!Number.isSafeInteger(characterID) || characterID <= 0) throw new Error("There is no pilot to redeem for.");
+  if (tokens.some((token) => !canRedeemOrdinarily(token))) throw new Error(TRAINING_CERTIFICATE_NOTICE);
   const answer = await act("userSvc", "ClaimRedeemTokens", [tokens.map(tokenKey), characterID], { useHomeStation });
   return decodeRedeemOutcome(answer);
 }

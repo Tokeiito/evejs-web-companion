@@ -10411,3 +10411,82 @@ test("a claim of redeem tokens is the client's, and the tokens are fetched afres
   assert.deepEqual(read.result, { type: "list", items: [] });
   assert.equal(asked().length, 3);
 });
+
+test("a failed post-claim redeem refresh is retried by the next read, without retrying the claim", async () => {
+  const queued = { type: "list", items: ["token 101"] };
+  const empty = { type: "list", items: [] };
+  const outcome = { type: "dict", entries: [["errors", { type: "list", items: [] }]] };
+  let reads = 0;
+  let claims = 0;
+  const { pilots, handle } = await selected({ answers: {
+    "userSvc.GetRedeemTokens": () => {
+      reads += 1;
+      if (reads === 2) throw new Error("temporary post-claim read failure");
+      return reads === 1 ? queued : empty;
+    },
+    "userSvc.ClaimRedeemTokens": () => { claims += 1; return outcome; },
+  } }, { allowed: new Set(["userSvc.GetRedeemTokens", "userSvc.ClaimRedeemTokens"]) });
+  const claimed = await pilots.callMethod("userSvc", "ClaimRedeemTokens", [[[101, null]], PILOT], { useHomeStation: false }, WHO, handle);
+  assert.deepEqual(claimed.result, outcome, "the successful claim survives its failed follow-up read");
+  const read = () => pilots.callMethod("userSvc", "GetRedeemTokens", [], null, WHO, handle);
+  assert.deepEqual((await read()).result, empty, "Refresh must not return already-redeemed tokens");
+  assert.deepEqual((await read()).result, empty);
+  assert.deepEqual([reads, claims], [3, 1], "only the failed read is retried, then its result is kept");
+});
+
+test("an older redeem fetch cannot restore stale tokens after a failed post-claim refresh", async () => {
+  const queued = { type: "list", items: ["token 101"] };
+  const empty = { type: "list", items: [] };
+  let finishOlder;
+  let olderStarted;
+  const older = new Promise((resolve) => { finishOlder = resolve; });
+  const started = new Promise((resolve) => { olderStarted = resolve; });
+  let reads = 0;
+  let claims = 0;
+  let activeReads = 0;
+  let maximumReads = 0;
+  const { pilots, session, handle } = await selected({ answers: {
+    "userSvc.GetRedeemTokens": async () => {
+      const number = ++reads;
+      maximumReads = Math.max(maximumReads, ++activeReads);
+      try {
+        if (number === 2) { olderStarted(); await older; return queued; }
+        if (number === 3) throw new Error("post-claim fetch failed after the older snapshot arrived");
+        return number === 1 ? queued : empty;
+      } finally {
+        activeReads -= 1;
+      }
+    },
+    "userSvc.ClaimRedeemTokens": () => { claims += 1; return { type: "dict", entries: [] }; },
+  } }, { allowed: new Set(["userSvc.GetRedeemTokens", "userSvc.ClaimRedeemTokens"]) });
+  session.notify("OnRedeemingQueueUpdated");
+  await started;
+  const claimed = pilots.callMethod("userSvc", "ClaimRedeemTokens", [[[101, null]], PILOT], { useHomeStation: false }, WHO, handle);
+  await new Promise((resolve) => setImmediate(resolve));
+  let answered = false;
+  const reading = pilots.callMethod("userSvc", "GetRedeemTokens", [], null, WHO, handle).then((answer) => { answered = true; return answer; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(answered, false, "the page's read waits for the queued refreshes");
+  finishOlder();
+  await claimed;
+  assert.deepEqual((await reading).result, empty);
+  assert.deepEqual([reads, claims, maximumReads], [4, 1, 1], "fetches remain serialized across a claim and an explicit read");
+});
+
+test("a failed redeem refresh preserves the original claim refusal and lets a later read recover", async () => {
+  const queued = { type: "list", items: ["token 101"] };
+  let reads = 0;
+  let claims = 0;
+  const { pilots, handle } = await selected({ answers: {
+    "userSvc.GetRedeemTokens": () => {
+      if (++reads === 2) throw new Error("temporary refresh failure");
+      return queued;
+    },
+    "userSvc.ClaimRedeemTokens": () => { claims += 1; throw refusedBy("RedeemNoDestination"); },
+  } }, { allowed: new Set(["userSvc.GetRedeemTokens", "userSvc.ClaimRedeemTokens"]) });
+  await rejects(pilots.callMethod("userSvc", "ClaimRedeemTokens", [[[101, null]], PILOT], { useHomeStation: false }, WHO, handle),
+    "CALL_REFUSED", /RedeemNoDestination/);
+  const read = await pilots.callMethod("userSvc", "GetRedeemTokens", [], null, WHO, handle);
+  assert.deepEqual(read.result, queued, "a refused claim did not consume the token");
+  assert.deepEqual([reads, claims], [3, 1], "recovery refetches instead of silently serving the old cache");
+});

@@ -38,6 +38,13 @@ export interface RedeemToken {
   readonly soulbound: boolean;
 }
 
+/** The retail redeem service diverts typeSoulboundMultiTrainingToken to its activation window. */
+export const TRAINING_CERTIFICATE_NOTICE = "Activate this training certificate in the EVE client.";
+
+export function canRedeemOrdinarily(token: Pick<RedeemToken, "typeID">): boolean {
+  return token.typeID !== 63188;
+}
+
 /** What a claim made and what it could not. */
 export interface RedeemOutcome {
   /** The tokens that were not redeemed, each with the server's message name (RedeemNoDestination, ...). */

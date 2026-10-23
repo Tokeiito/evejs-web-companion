@@ -18455,11 +18455,18 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   // redeem.FetchRedeemTokens (redeemsvc.py 63 to 65): the page reads the tokens as the pilot comes online and at the
   // server's OnRedeemingQueueUpdated, and after a claim; the transport answers from what it keeps, fetched as the
   // client fetches (bridge/redeemReads.ts). A transport that does not carry the call has none to give.
+  let redeemReadGeneration = 0;
   async function loadRedeemTokens(): Promise<void> {
+    const generation = ++redeemReadGeneration;
+    const current = callOptions.captureRequestGuard!();
     let answer: JsonValue;
     try {
       answer = await readRedeemTokens(bridgeAsk);
+      current();
+      if (generation !== redeemReadGeneration) return;
     } catch (error) {
+      current();
+      if (generation !== redeemReadGeneration) return;
       if (failsTheReading(error)) throw error;
       store.apply({ type: "redeem/tokens", tokens: null, error: "What you may redeem could not be read just now." });
       return;
@@ -18488,11 +18495,15 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   async function redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome> {
     const characterID = store.station.get().online?.characterID ?? null;
     if (characterID === null) throw new Error("There is no pilot online to redeem for.");
+    const current = callOptions.captureRequestGuard!();
     try {
-      return await claimRedeemTokens(bridgeDo, tokens, characterID, useHomeStation);
+      const outcome = await claimRedeemTokens(bridgeDo, tokens, characterID, useHomeStation);
+      current();
+      return outcome;
     } finally {
       // redeemsvc.py 127: the claim, answered or refused, is followed by the tokens' fetch.
-      await loadRedeemTokens().catch(() => {});
+      // A retired claim must not start that fetch under a replacement pilot.
+      try { current(); await loadRedeemTokens(); } catch { /* The claim retains its own outcome. */ }
     }
   }
 

@@ -3617,6 +3617,10 @@ function createGamePortPilots({
    */
   function redeemTokensFetched(entry) {
     const fetching = entry.redeemTokensWork.then(async () => {
+      // Clear inside the serialized fetch, after any older snapshot finishes:
+      // a failed refresh must leave the queue unread so the next read retries,
+      // rather than keep offering tokens a successful claim already consumed.
+      entry.redeemTokens = undefined;
       const form = shape(USER_SVC, REDEEM_TOKENS, [], null, contextFor(entry));
       ledger.note(USER_SVC, REDEEM_TOKENS, form);
       entry.redeemTokens = await byName(entry.session, USER_SVC, REDEEM_TOKENS, form);

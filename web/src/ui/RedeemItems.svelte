@@ -17,7 +17,7 @@
   import { panelErrorWords } from "../bridge/refusals.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
-  import type { RedeemOutcome, RedeemToken } from "../bridge/redeem.ts";
+  import { canRedeemOrdinarily, TRAINING_CERTIFICATE_NOTICE, type RedeemOutcome, type RedeemToken } from "../bridge/redeem.ts";
 
   let { store, flow }: { store: ClientStore; flow: AppFlow } = $props();
 
@@ -38,14 +38,15 @@
   let selected = $state<ReadonlySet<number>>(new Set());
 
   const tokens = $derived($redeem.tokens ?? []);
-  const chosen = $derived(tokens.filter((token) => selected.has(token.tokenID)));
+  const claimable = $derived(tokens.filter(canRedeemOrdinarily));
+  const chosen = $derived(claimable.filter((token) => selected.has(token.tokenID)));
   const isDocked = $derived(deriveDocked($flight.status, $station.online));
   const dockedAt = $derived(isDocked
     ? ($flight.status?.structureID ?? $flight.status?.stationID ?? $station.online?.structureID ?? $station.online?.stationID ?? null)
     : null);
 
   $effect(() => {
-    const here = new Set(tokens.map((token) => token.tokenID));
+    const here = new Set(claimable.map((token) => token.tokenID));
     if ([...selected].some((id) => !here.has(id))) selected = new Set([...selected].filter((id) => here.has(id)));
   });
 
@@ -70,6 +71,7 @@
   });
 
   function toggle(token: RedeemToken): void {
+    if (!canRedeemOrdinarily(token)) return;
     const next = new Set(selected);
     if (next.has(token.tokenID)) next.delete(token.tokenID);
     else next.add(token.tokenID);
@@ -77,7 +79,7 @@
   }
 
   function selectAll(): void {
-    selected = selected.size === tokens.length ? new Set() : new Set(tokens.map((token) => token.tokenID));
+    selected = chosen.length === claimable.length ? new Set() : new Set(claimable.map((token) => token.tokenID));
   }
 
   function stationName(id: number | null): string {
@@ -148,19 +150,22 @@
     <p class="empty">Nothing to redeem. Rewards and gifts for this account show up here.</p>
   {:else}
     <div class="bar">
-      <span>{chosen.length} of {tokens.length} selected</span>
-      <button type="button" disabled={busy} onclick={selectAll}>{selected.size === tokens.length ? "Select none" : "Select all"}</button>
+      <span>{chosen.length} of {claimable.length} selected</span>
+      <button type="button" disabled={busy || claimable.length === 0} onclick={selectAll}>{claimable.length > 0 && chosen.length === claimable.length ? "Select none" : "Select all"}</button>
     </div>
     <ul class="tokens">
       {#each tokens as token (token.tokenID)}
         <li>
           <label class="token" class:on={selected.has(token.tokenID)}>
-            <input type="checkbox" checked={selected.has(token.tokenID)} disabled={busy} onchange={() => toggle(token)} />
+            <input type="checkbox" checked={selected.has(token.tokenID)} disabled={busy || !canRedeemOrdinarily(token)} onchange={() => toggle(token)} />
             <TypeIcon typeID={token.typeID} name={typeName(token)} size="md" />
             <span class="what">
               <span class="name">{typeName(token)} x{token.quantity.toLocaleString()}{token.blueprintRuns > 0 ? ` (${token.blueprintRuns} runs)` : ""}</span>
               {#if token.label || token.description}
                 <span class="label">{token.label || token.description}</span>
+              {/if}
+              {#if !canRedeemOrdinarily(token)}
+                <span class="activation-note">{TRAINING_CERTIFICATE_NOTICE}</span>
               {/if}
             </span>
             <span class="expires">{expiresText(token)}</span>
@@ -221,6 +226,7 @@
     white-space: nowrap;
   }
   .label,
+  .activation-note,
   .expires {
     color: var(--color-muted);
     font-size: 0.85em;
