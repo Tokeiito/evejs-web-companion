@@ -103,6 +103,7 @@ import type {
 } from "./types.ts";
 import type { NamesState, WordsState } from "./names.ts";
 import type { CloneGrade } from "../bridge/cloneGrade.ts";
+import type { RedeemToken } from "../bridge/redeem.ts";
 import { deriveShipStats } from "../bridge/shipStats.ts";
 import { applyJamEvent, type ActiveJam } from "../bridge/jamNotifications.ts";
 import { EMPTY_RECIPE_BOOK } from "../bridge/piRecipes.ts";
@@ -181,6 +182,7 @@ export interface ClientState {
   readonly rewards: RewardsState;
   readonly addressBook: AddressBookState;
   readonly wallet: WalletState;
+  readonly redeem: RedeemState;
   readonly standings: StandingsState;
   readonly characterSheet: CharacterSheetState;
   readonly flight: FlightState;
@@ -498,6 +500,17 @@ const INITIAL_REWARDS: RewardsState = Object.freeze({
   loaded: false,
   error: null,
 });
+
+/**
+ * What the account may redeem (redeemsvc.py): null until read, and where the pilot's transport does not carry the
+ * read; an empty list is a real "nothing to redeem". A failed re-read keeps what was had, with its error.
+ */
+export interface RedeemState {
+  readonly tokens: readonly RedeemToken[] | null;
+  readonly error: string | null;
+}
+
+const INITIAL_REDEEM: RedeemState = Object.freeze({ tokens: null, error: null });
 
 // R50 wallet (extended R54). Every list starts NULL, not 0/[]: a balance not yet
 // read must not render as 0 ISK, and an unread corp wallet / ledger must not look
@@ -857,6 +870,7 @@ export interface ClientStore {
   readonly rewards: ReadableSignal<RewardsState>;
   readonly addressBook: ReadableSignal<AddressBookState>;
   readonly wallet: ReadableSignal<WalletState>;
+  readonly redeem: ReadableSignal<RedeemState>;
   readonly standings: ReadableSignal<StandingsState>;
   readonly characterSheet: ReadableSignal<CharacterSheetState>;
   readonly flight: ReadableSignal<FlightState>;
@@ -919,6 +933,7 @@ export function createClientStore(): ClientStore {
   const rewards = createSignal<RewardsState>(INITIAL_REWARDS);
   const addressBook = createSignal<AddressBookState>(INITIAL_ADDRESS_BOOK);
   const wallet = createSignal<WalletState>(INITIAL_WALLET);
+  const redeem = createSignal<RedeemState>(INITIAL_REDEEM);
   const standings = createSignal<StandingsState>(INITIAL_STANDINGS);
   const characterSheet = createSignal<CharacterSheetState>(INITIAL_CHARACTER_SHEET);
   const flight = createSignal<FlightState>(INITIAL_FLIGHT);
@@ -968,6 +983,7 @@ export function createClientStore(): ClientStore {
     rewards: rewards.get(),
     addressBook: addressBook.get(),
     wallet: wallet.get(),
+    redeem: redeem.get(),
     standings: standings.get(),
     characterSheet: characterSheet.get(),
     flight: flight.get(),
@@ -1025,6 +1041,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        redeem.set(INITIAL_REDEEM);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1089,6 +1106,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        redeem.set(INITIAL_REDEEM);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1132,6 +1150,7 @@ export function createClientStore(): ClientStore {
         rewards.set(INITIAL_REWARDS);
         addressBook.set(INITIAL_ADDRESS_BOOK);
         wallet.set(INITIAL_WALLET);
+        redeem.set(INITIAL_REDEEM);
         standings.set(INITIAL_STANDINGS);
         characterSheet.set(INITIAL_CHARACTER_SHEET);
         flight.set(INITIAL_FLIGHT);
@@ -1984,6 +2003,11 @@ export function createClientStore(): ClientStore {
           journalError: event.journalError,
           loaded: true,
         });
+        break;
+      case "redeem/tokens":
+        redeem.set(event.tokens === null && event.error !== null
+          ? { ...redeem.get(), error: event.error }
+          : { tokens: event.tokens, error: event.error });
         break;
       case "wallet/cleared":
         wallet.set(INITIAL_WALLET);
@@ -2921,6 +2945,7 @@ export function createClientStore(): ClientStore {
     rewards: readonlySignal(rewards),
     addressBook: readonlySignal(addressBook),
     wallet: readonlySignal(wallet),
+    redeem: readonlySignal(redeem),
     standings: readonlySignal(standings),
     characterSheet: readonlySignal(characterSheet),
     flight: readonlySignal(flight),
