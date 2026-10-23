@@ -297,6 +297,12 @@ export async function loadObjectiveChain(chainID: number, options: ApiOptions = 
   return await getJson(`/api/objectives/chain?chainID=${chainID}`, options);
 }
 
+/** Optional seasonal presentation data from the BFF's locally configured campaign definitions. */
+export async function getSeasonalCampaignDefinition(campaignID: number, options: ApiOptions = {}): Promise<import("../bridge/seasonalCampaigns.ts").SeasonalCampaignDefinition | null> {
+  const data = await getJson(`/api/login-rewards/campaigns/${campaignID}`, options);
+  return (data.definition ?? null) as unknown as import("../bridge/seasonalCampaigns.ts").SeasonalCampaignDefinition | null;
+}
+
 /** GET /api/dungeons/ship-restrictions: a dungeon's ship restrictions from a gate of it, as the BFF answers them. */
 export async function loadShipRestrictions(dungeonID: number, gateID: number | null, options: ApiOptions = {}): Promise<Readonly<Record<string, JsonValue>>> {
   return await getJson(`/api/dungeons/ship-restrictions?dungeonID=${dungeonID}${gateID !== null ? `&gateID=${gateID}` : ""}`, options);

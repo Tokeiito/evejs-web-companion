@@ -777,6 +777,9 @@ import { afterArriving, destinationValid, isPlayerItemID, isWaypointPlace, keepW
 import { REDEEM_NOTICE, decodeRedeemTokens, type RedeemOutcome, type RedeemToken } from "../bridge/redeem.ts";
 import { readRedeemTokens } from "../bridge/redeemReads.ts";
 import { claimRedeemTokens } from "../bridge/redeemWrites.ts";
+import { LOGIN_CAMPAIGN_NOTICE, campaignAfterClaim, decodeLoginCampaign, type LoginClaim } from "../bridge/loginRewards.ts";
+import { readLoginCampaign, readSeasonalCampaign } from "../bridge/loginRewardReads.ts";
+import { claimLoginReward as claimLoginRewardCall, claimSeasonalReward as claimSeasonalRewardCall } from "../bridge/loginRewardWrites.ts";
 import { lockTarget as lockTargetCall, unlockTarget as unlockTargetCall } from "../bridge/targetWrites.ts";
 import {
   decodeLaunched,
@@ -2533,11 +2536,23 @@ export interface AppFlow {
    * tokens for the pilot, and then what is left read again. Fails as the call fails.
    */
   redeemTokens(tokens: readonly RedeemToken[], useHomeStation: boolean): Promise<RedeemOutcome>;
+  /** Daily Login Rewards (loginCampaignService.py): the account's campaign, read again. */
+  loadLoginRewards(): Promise<void>;
+  /**
+   * The window's Claim (loginCampaignService.py claim_reward, 196 to 212): the day's reward, into the account's redeem
+   * queue. Fails where the server gave nothing (already claimed today), and the campaign is read again.
+   */
+  claimLoginReward(): Promise<LoginClaim>;
   /**
    * The wallet's Give ISK tab's Transfer (giveIskPanel.py TransferISK): AskAreYouSure with the tab's words, then
    * GiveCash(toID, amount). Answers whether the transfer was answered as made; false for No. Fails as the call fails.
    */
   giveIskFromWallet(toID: number, amount: number, cons: string): Promise<boolean>;
+  /**
+   * The seasonal tab's Claim (seasonalLoginCampaignService.py claim_reward, 80 to 88): the day's rewards, into the
+   * account's redeem queue; the campaign is read again after. Fails where the server gave nothing.
+   */
+  claimSeasonalReward(): Promise<void>;
   /**
    * R55 — the Standings page: the character's own standings and the
    * corporation's, in one pull, with every entity id resolved to a name.
@@ -5654,6 +5669,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // again.
     if (method === REDEEM_NOTICE) {
       void loadRedeemTokens().catch(() => {});
+      return;
+    }
+    // loginCampaignService.OnCampaignEnrollmentChanged (84 to 88): the account's campaign is another, and is read again.
+    if (method === LOGIN_CAMPAIGN_NOTICE) {
+      void loadLoginRewards().catch(() => {});
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -18506,6 +18526,109 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       try { current(); await loadRedeemTokens(); } catch { /* The claim retains its own outcome. */ }
     }
   }
+  // loginCampaignService._get_campaign_state (106 to 119): the page reads the account's campaign as the pilot comes
+  // online and at the server's OnCampaignEnrollmentChanged (84 to 88), by the service's own call
+  // (bridge/loginRewardReads.ts). A transport that does not carry the call has none to give.
+  let dailyLoginGeneration = 0;
+  let seasonalLoginGeneration = 0;
+  async function loadLoginRewards(): Promise<void> {
+    await Promise.all([loadDailyLoginCampaign(), loadSeasonalCampaign()]);
+  }
+
+  // seasonalLoginCampaignService.prime_campaign_data and get_claim_history (39 to 51, 90 to 97): the seasonal campaign
+  // on, and the days the account has claimed of it. What each day gives is the client's own data, by the campaign's
+  // ID from optional local BFF data, which the window reads.
+  async function loadSeasonalCampaign(): Promise<void> {
+    const generation = ++seasonalLoginGeneration;
+    const current = callOptions.captureRequestGuard!();
+    let seasonal: Awaited<ReturnType<typeof readSeasonalCampaign>>;
+    try {
+      seasonal = await readSeasonalCampaign((...args) => { current(); return bridgeAsk(...args); });
+      current();
+      if (generation !== seasonalLoginGeneration) return;
+    } catch (error) {
+      current();
+      if (generation !== seasonalLoginGeneration) return;
+      if (failsTheReading(error)) throw error;
+      return;
+    }
+    if (seasonal === null) {
+      store.apply({ type: "login-rewards/seasonal", seasonal: null });
+      return;
+    }
+    // Optional local campaign data stays on the BFF; an unknown definition
+    // still permits the server's ordinary claim.
+    let definition: Awaited<ReturnType<typeof api.getSeasonalCampaignDefinition>> = null;
+    try { definition = await api.getSeasonalCampaignDefinition(seasonal.active.campaignID, callOptions); }
+    catch { current(); /* Presentation data is optional; the server can still award this campaign. */ }
+    current();
+    if (generation !== seasonalLoginGeneration) return;
+    store.apply({ type: "login-rewards/seasonal", seasonal: { ...seasonal, definition } });
+    if (definition !== null) {
+      requestNames([...definition.alpha, ...definition.omega].map(([, typeID]) => ({ kind: "type", id: typeID })));
+    }
+  }
+
+  async function claimSeasonalReward(): Promise<void> {
+    const current = callOptions.captureRequestGuard!();
+    ++seasonalLoginGeneration;
+    let given = false;
+    try {
+      given = await claimSeasonalRewardCall(bridgeDo);
+      current();
+    } finally {
+      // The client keeps its own history after a claim (_add_rewards_to_history); the page reads the server's.
+      try { current(); ++seasonalLoginGeneration; await loadSeasonalCampaign(); } catch { /* Preserve the claim's outcome. */ }
+    }
+    if (!given) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+  }
+
+  async function loadDailyLoginCampaign(): Promise<void> {
+    const generation = ++dailyLoginGeneration;
+    const current = callOptions.captureRequestGuard!();
+    let answer: JsonValue;
+    try {
+      answer = await readLoginCampaign(bridgeAsk);
+      current();
+      if (generation !== dailyLoginGeneration) return;
+    } catch (error) {
+      current();
+      if (generation !== dailyLoginGeneration) return;
+      if (failsTheReading(error)) throw error;
+      store.apply({ type: "login-rewards/state", campaign: null, error: "Your daily login rewards could not be read just now." });
+      return;
+    }
+    const campaign = answer === null ? null : decodeLoginCampaign(answer);
+    store.apply({ type: "login-rewards/state", campaign, error: null });
+    if (campaign !== null) requestNames(campaign.days.map((day) => ({ kind: "type", id: day.typeID })));
+  }
+
+  async function claimLoginReward(): Promise<LoginClaim> {
+    const current = callOptions.captureRequestGuard!();
+    const generation = ++dailyLoginGeneration;
+    const campaign = store.loginRewards.get().campaign;
+    let claim: LoginClaim | null;
+    try {
+      claim = await claimLoginRewardCall(bridgeDo);
+      current();
+    } catch (error) {
+      // A lost response may still have committed. Reconcile, never retry the claim.
+      try { current(); ++dailyLoginGeneration; await loadDailyLoginCampaign(); } catch { /* Preserve the claim error. */ }
+      throw error;
+    }
+    const changed = generation !== dailyLoginGeneration || campaign?.campaignID !== store.loginRewards.get().campaign?.campaignID;
+    ++dailyLoginGeneration;
+    if (claim === null || campaign === null || changed) {
+      // claim_reward answers None where nothing may be claimed: what the server holds is read again.
+      await loadDailyLoginCampaign().catch(() => {});
+      current();
+      if (claim === null) throw new Error("There is nothing to claim yet: today's reward has been claimed for this account.");
+      return claim;
+    }
+    store.apply({ type: "login-rewards/claimed", campaign: campaignAfterClaim(campaign, claim), reward: claim.reward });
+    if (claim.reward !== null) requestNames([{ kind: "type", id: claim.reward.typeID }]);
+    return claim;
+  }
 
   const moneyTransferSignal = createSignal<MoneyTransfer | null>(null);
   let moneyTransferGeneration = 0;
@@ -29748,6 +29871,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       void retryDroneRecovery();
       void loadCrimewatch().catch(() => {});
       void loadCloneGrade().catch(() => {});
+      void loadLoginRewards().catch(() => {});
       // The mission tracker's registration as the client's info panels start (RegisterMissionTracking).
       void registerMissionTracking().catch(() => {});
       void loadRedeemTokens().catch(() => {});
@@ -31165,6 +31289,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     closeMoneyTransfer,
     moneyTransfer: readonlySignal(moneyTransferSignal),
     giveMoney,
+    loadLoginRewards,
+    claimLoginReward,
+    claimSeasonalReward,
     giveIskFromWallet,
     loadRedeemTokens,
     redeemHomeStation,

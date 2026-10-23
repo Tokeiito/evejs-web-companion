@@ -26,6 +26,8 @@
   import OwnerPicture from "./OwnerPicture.svelte";
   import { clientTexture } from "./skillGroupIcons.ts";
   import { portraitDefaultPath, portraitUrl } from "./ownerImages.ts";
+  import { canClaimNow } from "../bridge/loginRewards.ts";
+  import { seasonalClaimable, seasonalView } from "../bridge/seasonalCampaigns.ts";
   import type { ClientStore } from "../store/clientStore.ts";
   import type { AppFlow } from "../app/flow.ts";
 
@@ -58,6 +60,8 @@
   const wallet = store.wallet;
   // svelte-ignore state_referenced_locally
   const redeem = store.redeem;
+  // svelte-ignore state_referenced_locally
+  const loginRewards = store.loginRewards;
 
   // Contextual panels (Show Info) are deliberately absent: they open on the thing
   // you clicked, so a rail entry could only ever open one onto nothing.
@@ -90,6 +94,19 @@
    * equality check drops the other fifty-nine.
    */
   let clock = $state(eveClock(new Date()));
+  /**
+   * The login rewards button's mark (loginCampaignService.get_rewards_available): the day's reward may be claimed now.
+   * Looked at again as the clock's minute turns, so a reward that comes ready shows without anything else changing.
+   */
+  const loginRewardDue = $derived.by(() => {
+    void clock;
+    const { campaign, seasonal } = $loginRewards;
+    const now = Date.now();
+    const seasonalDue = seasonal === null ? false : seasonal.definition === null
+      ? seasonalClaimable(seasonal.active, seasonal.history, now)
+      : seasonalView(seasonal.definition, seasonal.active, seasonal.history, $station.cloneGrade !== 0, now).canClaim;
+    return (campaign !== null && canClaimNow(campaign, now)) || seasonalDue;
+  });
   $effect(() => {
     const tick = (): void => {
       clock = eveClock(new Date());
@@ -149,8 +166,8 @@
           class:open={openIds.has(tab.id)}
           class:active={focusedId === tab.id}
           aria-pressed={openIds.has(tab.id)}
-          title={tab.id === "redeem" && redeemCount > 0 ? `${tab.label} (${redeemCount})` : tab.label}
-          aria-label={tab.id === "redeem" && redeemCount > 0 ? `${tab.label}, ${redeemCount} to redeem` : tab.label}
+          title={tab.id === "redeem" && redeemCount > 0 ? `${tab.label} (${redeemCount})` : tab.id === "loginRewards" && loginRewardDue ? `${tab.label} (a reward is ready)` : tab.label}
+          aria-label={tab.id === "redeem" && redeemCount > 0 ? `${tab.label}, ${redeemCount} to redeem` : tab.id === "loginRewards" && loginRewardDue ? `${tab.label}, a reward is ready` : tab.label}
           onclick={() => onSelect(tab.id)}
         >
           <svg class="neocom-glyph" viewBox="0 0 24 24" aria-hidden="true">
@@ -165,6 +182,9 @@
           <span class="neocom-item-label">{tab.label}</span>
           {#if tab.id === "redeem" && redeemCount > 0}
             <span class="neocom-badge" aria-hidden="true">{redeemCount}</span>
+          {/if}
+          {#if tab.id === "loginRewards" && loginRewardDue}
+            <span class="neocom-dot" aria-hidden="true"></span>
           {/if}
         </button>
       </li>

@@ -69,6 +69,7 @@ const { createCreationAttemptJournal } = require("./creationAttemptJournal");
 const { createBridgeSessionJournal } = require("./bridgeSessionJournal");
 const { journaledPilotTransport } = require("./journaledPilotTransport");
 const config = require("./config");
+const { createSeasonalCampaignDefinitions } = require("./seasonalCampaignDefinitions");
 const botScriptStoreModule = require("./botScriptStore");
 const { lazyCompanionDb } = require("./companionDb");
 const { createPiPlanStore } = require("./piPlanStore");
@@ -406,6 +407,9 @@ const clientNotificationFormats = options.clientNotificationFormats || createCli
 // The retail client's own pictures, by their res: path, from the same install
 // (src/clientData/clientTextures.js).
 const clientTextures = options.clientTextures || createClientTextures({ clientRoot: config.clientRoot });
+const seasonalCampaignDefinitions = createSeasonalCampaignDefinitions({
+  filePath: options.seasonalCampaignsPath || config.seasonalCampaignsPath,
+});
 // The game-port client the customs-export hop speaks. Injected so the route
 // is exercised in tests without a socket, exactly as the gateway client is.
 const gameClientFactory = options.gameClientFactory || ((endpoint) => new GameClient(endpoint));
@@ -2819,6 +2823,16 @@ function planetBoundReads(planetID, ownerID, resourceTypeID) {
     ["GetProgramResultInfo", [pid, rtid, [], PLANET_PROGRAM_HEAD_RADIUS]],
   ];
 }
+
+// Presentation data from an optional, operator-owned client-data file. No path is accepted from a browser.
+app.get("/api/login-rewards/campaigns/:id", requireAuth, async (req, res) => {
+  const campaignID = /^\d+$/.test(req.params.id) ? Number(req.params.id) : 0;
+  if (!Number.isSafeInteger(campaignID) || campaignID <= 0) {
+    res.status(400).json({ ok: false, error: "INVALID_REQUEST", message: "A positive campaign ID is required." });
+    return;
+  }
+  res.json({ ok: true, definition: await seasonalCampaignDefinitions.get(campaignID) });
+});
 
 /**
  * GET /api/pi/planet-richness?planetIDs=a,b,c -- each planet's resource

@@ -38,6 +38,8 @@ const sdeDir = path.resolve(
 module.exports = {
   repoRoot,
   dataDir,
+  // Optional local client-derived seasonal rewards. Generated data stays in ignored operator storage.
+  seasonalCampaignsPath: path.resolve(process.env.EVEJS_SEASONAL_CAMPAIGNS_FILE || path.join(dataDir, "seasonal-campaigns.json")),
   iconCacheDir: path.resolve(process.env.EVEJS_ICON_CACHE_DIR || path.join(dataDir, "icon-cache")),
   iconCacheUrlPath: "/icon-cache",
   eveRoot,
