@@ -434,6 +434,7 @@ import { argumentsOf, createBotPresses, decodeQuestion, dialogOfKey, keptQuestio
 import { classifyDistributionAgentConversation, selectDistributionAgent } from "../nav/distributionAgentSelection.ts";
 import { refusalWords as sayRefusalWords } from "../bridge/refusals.ts";
 import { isListValue, readDictEntry, readDictPairs, readKeyVal, readRowField, readRowsetRows, unwrapLong, type JsonValue } from "../bridge/wire.ts";
+import { REMOTE_MESSAGE, remoteDialogOf, type RemoteDialogFallbackType } from "../bridge/serverDialogs.ts";
 import { convertTyped, DATE_LABELS, formatTemplate, LIST_DELIMITER, plainText } from "../bridge/clientWords.ts";
 import { corporationApplicationsOf, applicationEnded, applicationAcceptable, type CorporationApplication } from "../bridge/corporationApplications.ts";
 import { corporationDecorationsOf, corporationMedalAwardeesOf, medalDetailsInfoOf, type CorporationDecorations, type CorporationMedalAwardee, type MedalInfo, type MedalCreationGraphic } from "../bridge/corporationDecorations.ts";
@@ -1469,6 +1470,8 @@ export interface SaidDialog {
   readonly values: JsonValue | null;
   /** What the page says where the install has not the dialog. */
   readonly fallback: string;
+  /** Known presentation while the install's dialog type is unavailable. */
+  readonly fallbackType?: RemoteDialogFallbackType;
   /**
    * A question the client puts with Yes and No (uiconst.YESNO), or with OK and Cancel (uiconst.OKCANCEL), answered by
    * AppFlow.answerDialog (Yes and OK true); else OK alone.
@@ -5674,6 +5677,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // loginCampaignService.OnCampaignEnrollmentChanged (84 to 88): the account's campaign is another, and is read again.
     if (method === LOGIN_CAMPAIGN_NOTICE) {
       void loadLoginRewards().catch(() => {});
+      return;
+    }
+    // gameui.OnRemoteMessage (347 to 356): the server tells the player something, and the client puts up the dialog
+    // it names with its dict (prompt_player_fsd_dialog). So does the page, with its own words where the install has
+    // not the dialog (bridge/serverDialogs.ts).
+    if (method === REMOTE_MESSAGE) {
+      const said = remoteDialogOf(args);
+      if (said !== null) sayDialog(said.dialog, said.values, said.fallback, said.fallbackType);
       return;
     }
     // clone_grade_svc.OnSubscriptionChangedServer(new_state): what the notice says is the grade from then on,
@@ -10045,11 +10056,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
   }
 
   /** A dialog put up by its name, with the values for it and the page's own words for it (dialogsSaid). */
-  function sayDialog(dialog: string, values: JsonValue | null, fallback: string): void {
+  function sayDialog(dialog: string, values: JsonValue | null, fallback: string, fallbackType?: RemoteDialogFallbackType): void {
     // An answer kept for it (_handle_player_fsd_dialog, 59 to 64): not put up.
     if (dialogAnswerKept(dialog) !== null) return;
     dialogsSaidCount += 1;
-    putDialog({ n: dialogsSaidCount, dialog, values, fallback });
+    putDialog({ n: dialogsSaidCount, dialog, values, fallback, ...(fallbackType === undefined ? {} : { fallbackType }) });
   }
 
   /** The dialogs said, the newest twenty kept; a question that falls off them is answered No. */

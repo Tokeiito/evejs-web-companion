@@ -10,7 +10,8 @@
   //                                                                middle, a newer one's text in its place, gone after
   //                                                                five seconds, not to be clicked;
   //   any other                                                    nothing (an empty type, audio).
-  // Where the install has not the dialog, or the page has no install to read, a box with the page's own words. Each
+  // Where the install has not the dialog, or the page has no install to read, the known fallback presentation, else
+  // a box with the page's own words. Each
   // pilot of the tab is a client of its own: one not in front is told all the same, and what it is told says which
   // pilot it is for (the page's own words, as the fleet invitation's). What is to be put up is the flow's
   // (dialogsSaid); a box is taken down by its OK, the strip by its time.
@@ -698,14 +699,15 @@
   type Shown = { readonly said: SaidDialog; readonly kind: "pending" | "box" | "strip" | "none"; readonly type: string | null };
   const shown = $derived<readonly Shown[]>($said.map((one) => {
     const key = typeKey(one);
-    if (!(key in $words.templates)) {
+    if (!(key in $words.templates) && one.fallbackType === undefined) {
       return { said: one, kind: "pending", type: null };
     }
-    const type = $words.templates[key] ?? null;
-    // No such dialog to be read: the page's own words, in a box.
-    if (type === null) return { said: one, kind: "box", type: null };
+    // A known notification must still be shown if the metadata request fails.
+    // Any real local type, including an unsupported one, overrides the fallback.
+    const type = $words.templates[key] ?? one.fallbackType ?? null;
     // A question waits on its answer: a box, whatever its type.
     if (one.answers === "yesno" || one.answers === "okcancel") return { said: one, kind: "box", type };
+    if (type === null) return { said: one, kind: "box", type: null };
     return { said: one, kind: BOX_TYPES.has(type) ? "box" : STRIP_TYPES.has(type) ? "strip" : "none", type };
   }));
 
