@@ -65,6 +65,22 @@ import {
 
 // ─── The one action a tick emits ─────────────────────────────────────────────
 
+export type SalvageBatchStep =
+  | { readonly kind: "lock"; readonly targetID: number }
+  | { readonly kind: "unlock"; readonly targetID: number }
+  | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
+  | { readonly kind: "deactivate"; readonly moduleID: number };
+
+export type SalvageBatchOutcome =
+  | { readonly step: SalvageBatchStep; readonly ok: true }
+  | { readonly step: SalvageBatchStep; readonly ok: false; readonly error: unknown };
+
+/** Definite answers for every dispatched substep; an uncertain call throws instead. */
+export interface SalvageBatchResult {
+  readonly kind: "salvageBatch";
+  readonly outcomes: readonly SalvageBatchOutcome[];
+}
+
 export type ScriptAction =
   | { readonly kind: "maintainMiningSupport"; readonly relocating: boolean }
   | { readonly kind: "stopMiningSupportOperation" }
@@ -224,6 +240,18 @@ export type ScriptAction =
   | { readonly kind: "warpScan"; readonly target: string }
   /** Warp to a saved bookmark (the server resolves site/point + mission scope). */
   | { readonly kind: "warpBookmark"; readonly bookmarkID: number }
+  /** Take up a shared bookmark folder, asking for it active (the server adds it not active past the limit). */
+  | { readonly kind: "addKnownFolder"; readonly folderID: number }
+  /** Switch a known bookmark folder on or off. */
+  | { readonly kind: "setFolderActive"; readonly folderID: number; readonly active: boolean }
+  /**
+   * A salvager's module work for one tick, done together as a pilot does it: tractor beams let go and put on
+   * wrecks, salvagers put on locked wrecks, locks asked for. Each step is made by itself; one refused does not
+   * stop the rest.
+   */
+  | { readonly kind: "salvageBatch"; readonly steps: readonly SalvageBatchStep[] }
+  /** Move bookmarks from one folder into another (a salvaged site's bookmark filed away). */
+  | { readonly kind: "moveBookmarks"; readonly fromFolderID: number; readonly toFolderID: number; readonly bookmarkIDs: readonly number[] }
   /** Warp to one of the pilot's planetary launches, by the launch's own ID. */
   | { readonly kind: "warpLaunch"; readonly launchID: number }
   /** Warp to a mission's marked spot by asking its agent, with the spot's own type and number (the journal's). */
@@ -338,6 +366,8 @@ export type ScriptAction =
       readonly supportOrder?: { readonly scope: import("./miningSupportFleet.ts").SupportFleetScope; readonly actionID: number } }
   /** Hand the SHARED autopilot a system-only route (arrives in space, no dock). */
   | { readonly kind: "startSystemRoute"; readonly systemID: number }
+  /** Stop the SHARED autopilot's route where the ship is (a trip home given up for a site in this system). */
+  | { readonly kind: "stopRoute" }
   /**
    * TELL THE PLAYER — a notification, a sound, a line in the readout. The one
    * action that touches nothing in the world; it is carried as an action anyway so
@@ -1059,6 +1089,39 @@ export function activeStepMinesIce(script: BotScript, mem: ScriptMemory): boolea
   }
   const belt = activeStep(script, mem.position)?.args["belt"];
   return belt !== undefined && belt.kind === "belt" && belt.belt.mode === "ice-site";
+}
+
+/**
+ * Is the active block a salvager emptying its hold at its station? Only then is the docked hold read worth its
+ * price: waiting docked for a site, it reads nothing of the ship.
+ */
+export function activeStepSalvagerUnloading(script: BotScript, mem: ScriptMemory): boolean {
+  if (mem.position.kind === "done" || mem.position.kind === "branch-enter" ||
+      mem.position.kind === "loop-branch-enter" || mem.latched !== null) {
+    return false;
+  }
+  const step = activeStep(script, mem.position);
+  return step !== undefined && step !== null && step.macro === "salvage-bookmarked-sites" && mem.macroMem[step.id]?.["unloading"] === true;
+}
+
+/**
+ * Does the active block need the folders it may ADD by name (SearchFoldersWithAdminAccess)? That read is not kept
+ * by the transport, so it is asked only while a block is still taking up its folders.
+ */
+export function activeStepNeedsFolderSearch(script: BotScript, mem: ScriptMemory): boolean {
+  if (mem.position.kind === "done" || mem.position.kind === "branch-enter" ||
+      mem.position.kind === "loop-branch-enter" || mem.latched !== null) {
+    return false;
+  }
+  const step = activeStep(script, mem.position);
+  if (step === undefined || step === null) {
+    return false;
+  }
+  if (step.macro === "use-bookmark-folders") {
+    return true;
+  }
+  // The salvager searches only until its folders are on; the known folders, which the transport keeps, say the rest.
+  return step.macro === "salvage-bookmarked-sites" && mem.macroMem[step.id]?.["foldersReady"] !== true;
 }
 
 /**

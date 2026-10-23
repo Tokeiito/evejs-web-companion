@@ -501,6 +501,7 @@ import { CHARGE_ATTRIBUTE_IDS, chargeFactsFromAttributes, type ChargeFacts } fro
 import { RAT_COMBAT_ATTRIBUTE_IDS, ratCombatFromAttributes, type RatCombatFacts } from "../nav/combatPosition.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
+import { issueSalvageBatch } from "../nav/salvageBatchIssue.ts";
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
 import { AUTOMATIC_UTILITY_FAMILIES } from "../nav/combatUtilityPolicy.ts";
 import { issueCombatUtility, issueUtilityReload } from "../nav/combatUtilityIssue.ts";
@@ -725,6 +726,8 @@ import { aggressionSettingsOf, assertCorpAggressionStatusMethod, corporationPubl
 import { toNumOrNull as corporationShareNumber } from "../bridge/allianceInfo.ts";
 import { BULK_FIT_SHIPS_CONFIG, fitShips, isShipAssembled, listPlace, maxAvailableAndMissing, maxShipsToFit, personalContainers, qtyInPlaceByTypeIDs } from "../bridge/multiFit.ts";
 import { readAccessGroup, readFolderInfo, readFoldersWithAdminAccess, readMyAccessGroups, readMyActiveBookmarks } from "../bridge/bookmarkReads.ts";
+import { classifySalvageModules } from "../nav/salvageModules.ts";
+import { splitNeverFits } from "../bridge/bayRouting.ts";
 import type { AccessGroup, ActiveBookmarks, BookmarkFolder } from "../bridge/bookmarks.ts";
 import { agentsAtStation, readAgentsTable } from "../bridge/agentReads.ts";
 import {
@@ -3576,6 +3579,8 @@ export interface AppFlow {
   listSavedFittings(): Promise<readonly (import("../bridge/sharedFittings.ts").SourcedFitting & { readonly shipName: string | null })[]>;
   /** The character's saved bookmarks (for the Bot Builder's saved-spot picker). */
   listBookmarks(): Promise<readonly { bookmarkID: number; name: string }[]>;
+  /** The bookmark folders the character knows or administers (for the Bot Builder's folder picker). */
+  listBookmarkFolders(): Promise<readonly { folderID: number; name: string }[]>;
   /**
    * The pilot's bookmark folders, bookmarks and subfolders (accessGroupBookmarkMgr.GetMyActiveBookmarks, as the
    * client's bookmark service primes them): the Locations window's list.
@@ -25694,6 +25699,14 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     return ids;
   }
 
+  /** The fitted, online tractor beams, judged as the salvagers are: high slot, online, group name (nav/salvageModules.ts). */
+  function resolveTractorModuleIDs(): readonly number[] {
+    const fit = store.fitting.get();
+    const resolved = store.names.get().resolved;
+    return classifySalvageModules(fit.slotsError === null ? fit.slots : null, (typeID) => resolved[nameKey("typeGroup", typeID)] ?? null)
+      .tractors.map((module) => module.moduleID);
+  }
+
   function resolveSalvageModuleIDs(): readonly number[] {
     const fit = store.fitting.get();
     if (fit.slotsError !== null) {
@@ -25727,12 +25740,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     "fly-to-mission-site",
   ]);
   const CONVO_MACROS = new Set(["request-mission", "accept-mission", "turn-in-mission"]);
-  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "board-previous-ship", "board-planetary-hauler", "move-items", "repair-ship", "sell-item", "jettison-cargo", "load-cargo", "haul-all", "route-hauler"]);
+  const CARGO_MACROS = new Set(["accept-mission", "load-mission-cargo", "turn-in-mission", "unload-cargo", "refine-ore", "refit-ship", "board-previous-ship", "board-planetary-hauler", "move-items", "repair-ship", "sell-item", "jettison-cargo", "load-cargo", "haul-all", "route-hauler", "salvage-bookmarked-sites"]);
   // Blocks that need the ACTIVE HULL'S BAY LIST, contents included. Kept apart
   // from CARGO_MACROS because the two reads have very different prices: the
   // inventory panel is one call, `/bays` is one capacity call per candidate
   // flag plus a listing. Only a block that actually empties the ship earns it.
-  const BAY_MACROS = new Set(["unload-cargo", "load-cargo", "haul-all", "route-hauler"]);
+  const BAY_MACROS = new Set(["unload-cargo", "load-cargo", "haul-all", "route-hauler", "salvage-bookmarked-sites"]);
   // Blocks that WORK A ROCK, and so are worth running the mining surveyor for.
   // `travel-to-belt` and `compress-ore` are deliberately not here: neither one
   // reads a rock, and a scan they cannot use is a round trip nobody asked for.
@@ -26673,7 +26686,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ? Promise.resolve(null)
         : api.getShipBays(shipID, callOptions, [...keys, "cargo"]).catch(() => null),
     ]);
-    const rows = decodeInventoryRows(contents.list, contents.volumes);
+    const rows = decodeInventoryRowsChecked(contents.list, contents.volumes);
+    if (rows === null) throw new Error("Container contents could not be confirmed.");
     if (rows.length === 0) {
       // It held nothing — the one answer nobody could have had without flying
       // here. Say so, so the next pilot does not make the same trip.
@@ -26685,30 +26699,43 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // "hand it over and let the server judge" — never as "no room".
     const freeFor = (bay: string | null): number | null =>
       holdFreeM3(room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity ?? null);
+    // ⚠ A THING NO HOLD OF THIS HULL COULD TAKE EVEN EMPTY IS NOT A FULL SHIP.
+    // A 4,000 m3 drop in a wreck used to plan nothing, which reads as "no room"
+    // and sent a salvager home to unload and back again for ever. Such rows are
+    // left where they are (bayRouting.splitNeverFits). Successful completion
+    // lets this salvager's own memory move on; another hull may carry them,
+    // so this is never evidence for the shared emptied-container record.
+    const capacityFor = (bay: string | null): number | null =>
+      room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity?.capacity ?? null;
+    const { rest } = splitNeverFits(rows, bays, capacityFor);
+    if (rest.length === 0) {
+      return { stacks: rows.length, planned: 0, moved: 0 };
+    }
     const outcome = await transferLootedRows(
-      rows,
+      rest,
       { kind: "container", itemID: containerID },
       bays,
       freeFor,
       claim,
     );
-    if (claim) {
-      // The route keeps its lease until an authoritative post-action read says
-      // the container is actually empty. A planned transfer can fit only part
-      // of a stack, or leave another stack behind for this or another hull.
-      const remaining = await api.openContainer(containerID, callOptions);
-      if (decodeInventoryRows(remaining.list, remaining.volumes).length > 0) {
-        throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
+    if (claim || outcome.moved > 0) {
+      // Transfers count calls, not emptied stacks, and one call may move only
+      // part of one stack. Only the actual remaining rows prove global empty.
+      // A claimant still requires the post-read; a manual/companion transfer
+      // that succeeded need not fail solely because that extra read failed.
+      const remaining = claim
+        ? await api.openContainer(containerID, callOptions)
+        : await api.openContainer(containerID, callOptions).catch((error) => {
+          if (isSessionLost(error)) throw error;
+          return null;
+        });
+      if (remaining !== null) {
+        const remainingRows = decodeInventoryRowsChecked(remaining.list, remaining.volumes);
+        if (claim && (remainingRows === null || splitNeverFits(remainingRows, bays, capacityFor).rest.length > 0)) {
+          throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
+        }
+        if (remainingRows?.length === 0) reportContainerEmptied(containerID);
       }
-      reportContainerEmptied(containerID);
-      return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
-    }
-    if (outcome.moved >= rows.length) {
-      // Every stack it had, this ship took: it is empty NOW, which is the same
-      // fact as "it was empty" to every pilot still to come. A PARTIAL move is
-      // deliberately silent — what did not fit is a fact about this hull's
-      // holds, and a can somebody else has room for must stay on their list.
-      reportContainerEmptied(containerID);
     }
     return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
   }
@@ -27160,7 +27187,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         }
         let bookmarks: ScriptObservation["bookmarks"] = null;
         // (The mission block takes its spots from the journal, as the client's bookmark service does: no folder is read for it.)
-        if (macro === "warp-to-bookmark") {
+        if (macro === "warp-to-bookmark" || macro === "salvage-bookmarked-sites") {
           try {
             // The page's own call (bridge/bookmarkReads.ts), as the client's bookmark service makes it. A read
             // that fails leaves them unread, and the step reading: never an empty list of them. On the game port
@@ -27169,10 +27196,33 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             bookmarks = active.bookmarks.map((bm) => ({
               bookmarkID: bm.bookmarkID,
               name: bm.memo,
+              folderID: bm.folderID,
+              // FILETIME: 100 ns since 1601. A shared bookmark is not warped to by another pilot for its first
+              // two minutes (eve.js beyonceService.isBookmarkDelayed), so its age is what a bot needs.
+              ageMs: bm.created === null ? null : serverNow() - Number((bm.created - 116444736000000000n) / 10000n),
               solarSystemID: bm.locationID > 0 ? bm.locationID : null,
+              position: bm.x !== null && bm.y !== null && bm.z !== null ? { x: bm.x, y: bm.y, z: bm.z } : null,
             }));
           } catch {
             bookmarks = null;
+          }
+        }
+        let bookmarkFolders: ScriptObservation["bookmarkFolders"] = null;
+        if (macro === "use-bookmark-folders" || macro === "salvage-bookmarked-sites") {
+          try {
+            // The folders the pilot knows, and those it administers and may add: both of the client's reads
+            // (bridge/bookmarkFolders.ts). A read that fails leaves them unread, never an empty list. The search is
+            // not kept by the transport, so it is asked only while a block is still taking its folders up.
+            const [active, administered] = await Promise.all([
+              readMyActiveBookmarks(bridgeAsk),
+              hint.needsFolderSearch === true ? readFoldersWithAdminAccess(bridgeAsk) : Promise.resolve([]),
+            ]);
+            bookmarkFolders = {
+              known: active.folders.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal, isActive: f.isActive })),
+              addable: administered.map((f) => ({ folderID: f.folderID, name: f.folderName, isPersonal: f.isPersonal })),
+            };
+          } catch {
+            bookmarkFolders = null;
           }
         }
         let activeShipID: ScriptObservation["activeShipID"] = null;
@@ -27413,7 +27463,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetAds = null;
           }
         }
-        if (macro !== null && (MISSION_MACROS.has(macro) || CARGO_MACROS.has(macro))) {
+        // The salvager reads its hold only while emptying it at its station, not each tick it waits there for a site.
+        const readsHolds = macro !== "salvage-bookmarked-sites" || hint.salvagerUnloading === true;
+        if (macro !== null && (MISSION_MACROS.has(macro) || (CARGO_MACROS.has(macro) && readsHolds))) {
           if (MISSION_MACROS.has(macro)) {
             try {
               journal = decodeJournal(await readJournal(bridgeAsk));
@@ -27441,7 +27493,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
               briefing = null;
             }
           }
-          if (CARGO_MACROS.has(macro)) {
+          if (CARGO_MACROS.has(macro) && readsHolds) {
             try {
               const panel = await api.loadInventory(callOptions);
               // ⚠ THE VOLUMES ARE NOT DECORATION. Per-unit m³ is what lets the
@@ -27466,7 +27518,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           // Gated hard on that block: the BFF answers `/bays` with a capacity
           // call per candidate flag, which is worth paying once at a drop-off
           // and never worth paying on a mining tick.
-          if (BAY_MACROS.has(macro)) {
+          if (BAY_MACROS.has(macro) && readsHolds) {
             try {
               // The hull the fit was resolved against, falling back to the
               // inventory panel's active ship: this block runs DOCKED, where the
@@ -27687,6 +27739,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           activeFitting,
           activeShipID,
           bookmarks,
+          bookmarkFolders,
           colonies,
           piLaunches,
           customsOffices,
@@ -27723,6 +27776,7 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           oreMiningModuleIDs: capabilities.oreMining,
           travelPropulsionModules: capabilities.travelPropulsion,
           salvageModuleIDs: capabilities.salvage,
+          tractorModuleIDs: macro === "salvage-bookmarked-sites" ? resolveTractorModuleIDs() : [],
           shieldRepairerIDs: capabilities.defense.shield,
           armorRepairerIDs: capabilities.defense.armor,
           hullRepairerIDs: capabilities.defense.hull,
@@ -28191,6 +28245,23 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
           case "warpBookmark":
             await warpToSpot(action.bookmarkID);
             return;
+          case "addKnownFolder":
+            await addToKnownFoldersCall(bridgeDo, action.folderID, true);
+            return;
+          case "setFolderActive":
+            await setFolderActiveCall(bridgeDo, action.folderID, action.active);
+            return;
+          case "moveBookmarks":
+            await moveBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, null, action.bookmarkIDs);
+            return;
+          case "salvageBatch": {
+            return issueSalvageBatch(action.steps, async (step) => {
+              if (step.kind === "lock") await lockTargetCall(bridgeDo, step.targetID, null);
+              else if (step.kind === "unlock") await releaseTarget(step.targetID);
+              else if (step.kind === "activate") requireModuleOutcome(await switchModuleOn(step.moduleID, { targetID: step.targetID, repeat: -1 }), step.moduleID, "activate");
+              else requireModuleOutcome(await switchModuleOff(step.moduleID, {}), step.moduleID, "deactivate");
+            }, isSessionLost);
+          }
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);
             return;
@@ -28287,8 +28358,11 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             return;
           }
           case "lootContainer": {
-            // Same shape as lootWreck — the server applies no ownership check to
-            // a container, so nothing here needs to either.
+            // Same shape as lootWreck. The server DOES judge a container's
+            // loot rights (spaceLootEntitlement: a take without them is theft,
+            // a suspect flag in empire space); the deciders choose only cans the
+            // pilot may take (nav/lootableContainers.ts), and the claim here is
+            // the haulers' lease on a can, not a right to it.
             if (!claimRunID) throw new Error("Container ownership was not confirmed.");
             await lootFrom(action.containerID, claimRunID);
             return;
@@ -28381,6 +28455,9 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             fleetApplication = { fleetID: action.fleetID, outcome, ...(action.supportOrder ? { supportOrder: action.supportOrder } : {}) };
             return;
           }
+          case "stopRoute":
+            autopilot?.abort();
+            return;
           case "startSystemRoute":
             // The SHARED autopilot again — resolveDestination answers a system id
             // with kind "system", so the plan carries no final dock and the ride
@@ -31450,6 +31527,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       return active.bookmarks
         .filter((bm) => bm.memo.length > 0)
         .map((bm) => ({ bookmarkID: bm.bookmarkID, name: bm.memo }));
+    },
+
+    async listBookmarkFolders() {
+      const [active, administered] = await Promise.all([readMyActiveBookmarks(bridgeAsk), readFoldersWithAdminAccess(bridgeAsk)]);
+      const byID = new Map<number, string>();
+      for (const folder of [...active.folders, ...administered]) byID.set(folder.folderID, folder.folderName);
+      return [...byID].map(([folderID, name]) => ({ folderID, name })).sort((a, b) => a.name.localeCompare(b.name) || a.folderID - b.folderID);
     },
 
     pauseRoute() {

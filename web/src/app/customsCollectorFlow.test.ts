@@ -93,7 +93,8 @@ for (const failure of ["null", "malformed"] as const) {
       assert.deepEqual(transfers, [{ itemIDs: [90070], from: { kind: "container", itemID: OFFICE_B },
         to: { kind: "shipBay", bay: "planetary" } }]);
       assert.equal(counts.get(OFFICE_A), 3);
-      assert.equal(counts.get(OFFICE_B), 4);
+      // The recovered transfer is followed by a read proving whether cargo remains.
+      assert.equal(counts.get(OFFICE_B), 5);
       assert.equal(store.customBot.get().status, "stopped");
     } finally {
       unsubscribe();

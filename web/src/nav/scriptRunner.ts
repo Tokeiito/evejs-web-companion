@@ -25,9 +25,11 @@
 
 import type { BotScript, ProgramNode, SquadRoleArg } from "../bots/botScript.ts";
 import { startupSteps, type StartupCheckpoint, type StartupState } from "../bots/startup.ts";
-import { resolveStationRef } from "./scriptMacros.ts";
+import { resolveStationRef, settleSalvageBatchMemory } from "./scriptMacros.ts";
 import {
   activeMacroID,
+  activeStepNeedsFolderSearch,
+  activeStepSalvagerUnloading,
   currentStepID,
   activeStepNeedsTypeNames,
   activeStepMinesIce,
@@ -46,6 +48,9 @@ import {
   type ScriptAction,
   type ScriptBoard,
   type ScriptMemory,
+  type SalvageBatchOutcome,
+  type SalvageBatchResult,
+  type SalvageBatchStep,
 } from "./scriptDecide.ts";
 import type { ScriptObservation } from "./scriptConditions.ts";
 import { describeAction, newRunID, type BotLogDraft, type BotLogSink } from "./botLog.ts";
@@ -77,6 +82,10 @@ export interface ObserveHint {
    * means "no", which is what every block but a name-matching one wants.
    */
   readonly needsTypeNames?: boolean;
+  /** Whether the active block is still taking up its bookmark folders, and so needs the folders it may add by name. */
+  readonly needsFolderSearch?: boolean;
+  /** Whether the active block is a salvager emptying its hold, the one time it needs the docked hold read. */
+  readonly salvagerUnloading?: boolean;
   /**
    * Whether the active block is a mining block touring ORE SITES, and so needs
    * the onboard scanner read that only the fly-to-an-anomaly blocks otherwise
@@ -177,6 +186,19 @@ function actionTargetID(action: ScriptAction): number | null {
   return null;
 }
 
+/** A result must describe the requested substeps, in order, without inventing completion. */
+function batchOutcomesMatch(value: unknown, steps: readonly SalvageBatchStep[], complete: boolean): value is readonly SalvageBatchOutcome[] {
+  if (!Array.isArray(value) || (complete ? value.length !== steps.length : value.length > steps.length)) return false;
+  return value.every((outcome: unknown, index) => {
+    if (outcome === null || typeof outcome !== "object" || !("ok" in outcome) || typeof outcome.ok !== "boolean" || !("step" in outcome)) return false;
+    const step = outcome.step;
+    const wanted = steps[index]!;
+    return step !== null && typeof step === "object" && "kind" in step && step.kind === wanted.kind &&
+      (!("targetID" in wanted) || ("targetID" in step && step.targetID === wanted.targetID)) &&
+      (!("moduleID" in wanted) || ("moduleID" in step && step.moduleID === wanted.moduleID));
+  });
+}
+
 export type ScriptRunnerStatus = "idle" | "running" | "paused" | "stopped" | "error";
 
 /** The readout pushed to the store every tick. */
@@ -217,8 +239,10 @@ export interface ScriptRunnerDeps {
    * count) and it must never change what the run does next. Returning nothing,
    * which is what every performer did before this existed and what nearly all
    * still do, means "exactly as asked".
+   * A salvageBatch instead requires a complete SalvageBatchResult: normal
+   * refusals are per-substep answers, and an interrupted batch must throw.
    */
-  issue(action: ScriptAction, claimRunID?: string, invocation?: { readonly runID: string; readonly invocationID: number; readonly stepPath: string }): Promise<void | string | null | { readonly launchedDroneIDs: readonly number[] }>;
+  issue(action: ScriptAction, claimRunID?: string, invocation?: { readonly runID: string; readonly invocationID: number; readonly stepPath: string }): Promise<void | string | null | { readonly launchedDroneIDs: readonly number[] } | SalvageBatchResult>;
   readonly mutationCustody?: () => boolean;
   readonly startup?: StartupCheckpoint;
   /** Optional for pure tests; a live loot-containers step requires it. */
@@ -324,6 +348,34 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
   // forever-loop hands the same failing target a fresh budget on every lap. This
   // one is replaced only by `start`, so its bound is the one that binds.
   let ledger: RefusalLedger = createRefusalLedger();
+  function settleBatch(
+    planned: ScriptMemory,
+    stepPath: string | null,
+    outcomes: readonly SalvageBatchOutcome[],
+    obs: ScriptObservation,
+  ): { memory: ScriptMemory; maxRefusals: number; failed: number } {
+    let settled = planned;
+    if (stepPath !== null && planned.macroMem[stepPath] !== undefined) {
+      settled = { ...planned, macroMem: { ...planned.macroMem,
+        [stepPath]: settleSalvageBatchMemory(planned.macroMem[stepPath]!, outcomes) } };
+    }
+    let maxRefusals = 0;
+    let failed = 0;
+    for (const outcome of outcomes) {
+      const step = outcome.step;
+      const target = "targetID" in step ? step.targetID : step.moduleID;
+      const key = refusalKey(stepPath, step.kind, target);
+      if (outcome.ok) {
+        ledger.clear(key);
+      } else {
+        failed += 1;
+        const stillOnGrid = obs.snapshot == null ? null : obs.snapshot.entities.some((entity) => entity.itemID === target);
+        const noted = ledger.note(key, deps.refusalReason(outcome.error), Date.now(), stillOnGrid, target);
+        maxRefusals = Math.max(maxRefusals, noted.count);
+      }
+    }
+    return { memory: settled, maxRefusals, failed };
+  }
   let last: ScriptRunnerSnapshot = IDLE_SNAPSHOT;
   /**
    * The last observation that actually arrived. Kept for ONE reason: when reads
@@ -492,6 +544,8 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         activeMacro: activeMacroID(script, memory),
         needsMobileCombat: needsMobileCombat(script.program),
         needsTypeNames: activeStepNeedsTypeNames(script, memory),
+        needsFolderSearch: activeStepNeedsFolderSearch(script, memory),
+        salvagerUnloading: activeStepSalvagerUnloading(script, memory),
         needsOreSites: activeStepToursOreSites(script, memory),
         minesIce: activeStepMinesIce(script, memory),
         squadRole: activeSquadRole(script, memory),
@@ -526,7 +580,11 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
     const travelAuthority = operation?.travelAssist === "AUTO" && !operation.stopRequested &&
       !!ownedTarget && ownedTarget.claimedByOperationID === operation.operationID &&
       ["RESERVED", "ACTIVE", "DRAINING"].includes(ownedTarget.state);
-    if (travelAssist?.pending() && !travelAuthority) {
+    // The dedicated salvager has no mining operation: its subwarp approaches are its own
+    // authority (the macro being active), scoped by step path; the entity or point
+    // approached is the assist's own key.
+    const salvagerTravel = activeMacroID(script, memory) === "salvage-bookmarked-sites";
+    if (travelAssist?.pending() && !travelAuthority && !salvagerTravel) {
       await travelAssist.beforeAction({ enabled: false, scope: null, action: { kind: "wait" },
         snapshot: obs.snapshot ?? null, inWarp: obs.inWarp ?? null, docked: obs.docked ?? null,
         modules: [], scrammed: obs.scrammed ?? null });
@@ -627,11 +685,13 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
     }
     if (travelAssist) {
       const movementMacro = activeMacroID(script, memory);
+      const scopeIsSalvager = salvagerTravel && !ownedTarget;
       const consumed = await travelAssist.beforeAction({
-        enabled: travelAuthority && result.status === "running" && result.memory.latched === null &&
-          ["mine-at-belt", "fleet-mine", "loot-containers"].includes(movementMacro ?? ""),
-        scope: ownedTarget ? `${ownedTarget.targetKey}:${result.stepPath}` : null,
-        action: result.action, snapshot: obs.snapshot ?? null, inWarp: obs.inWarp ?? null,
+        enabled: result.status === "running" && result.memory.latched === null &&
+          ((travelAuthority && ["mine-at-belt", "fleet-mine", "loot-containers"].includes(movementMacro ?? "")) ||
+            (salvagerTravel && movementMacro === "salvage-bookmarked-sites")),
+        scope: ownedTarget ? `${ownedTarget.targetKey}:${result.stepPath}` : salvagerTravel ? `salvager:${result.stepPath}` : null,
+        action: result.action, workWhileMoving: scopeIsSalvager, snapshot: obs.snapshot ?? null, inWarp: obs.inWarp ?? null,
         docked: obs.docked ?? null, modules: obs.travelPropulsionModules ?? [], scrammed: obs.scrammed ?? null,
       });
       if (consumed || token !== runToken || status !== "running") return;
@@ -707,7 +767,11 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
       // A safety watch's home destination is intent, not action completion:
       // keep that latch even when this first movement request is refused.
       memory = { ...memory, latched: memory.latched ?? result.memory.latched };
-      const targetID = actionTargetID(result.action);
+      const salvageSubstep = activeMacroID(script, result.memory) === "salvage-bookmarked-sites" &&
+        ["lock", "unlock", "activate", "deactivate"].includes(result.action.kind);
+      const targetID = salvageSubstep && "targetID" in result.action ? result.action.targetID
+        : salvageSubstep && "moduleID" in result.action ? result.action.moduleID
+          : actionTargetID(result.action);
       const key = refusalKey(result.stepPath, result.action.kind, targetID);
       let issuedSuccessfully = false;
       // Set only by a refusal, so a healthy call keeps the ordinary settle.
@@ -734,10 +798,18 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         const note = await deps.issue(result.action, result.action.kind === "lootContainer" ? claim?.runID : undefined,
           { runID, invocationID: ++actionInvocation, stepPath: result.stepPath ?? "" });
         issuePending = false;
+        let batch: ReturnType<typeof settleBatch> | null = null;
+        if (result.action.kind === "salvageBatch") {
+          if (note === null || typeof note !== "object" || !("kind" in note) || note.kind !== "salvageBatch" ||
+              !batchOutcomesMatch(note.outcomes, result.action.steps, true)) {
+            throw Object.assign(new Error("The salvage batch did not return every substep's outcome."), { code: "MODULE_ACTION_UNCERTAIN" });
+          }
+          batch = settleBatch(result.memory, result.stepPath, note.outcomes, obs);
+        }
         // Completion belongs to the confirmed action, including one that
         // finished while paused. Preserve a concurrently requested home trip.
-        memory = { ...result.memory, latched: memory?.latched ?? result.memory.latched };
-        if (result.action.kind === "launchDrones" && note && typeof note === "object" && result.stepPath) {
+        memory = { ...(batch?.memory ?? result.memory), latched: memory?.latched ?? result.memory.latched };
+        if (result.action.kind === "launchDrones" && note && typeof note === "object" && "launchedDroneIDs" in note && result.stepPath) {
           const state = memory.macroMem[result.stepPath];
           const owned = state?.combatOwned as import("./combatOwnership.ts").CombatOwnership | undefined;
           if (owned) memory = { ...memory, macroMem: { ...memory.macroMem, [result.stepPath]: {
@@ -746,16 +818,23 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
           } } };
         }
         retainActionProgress(beforeAction, memory, result.action, !!startupStep && !!deps.startup);
-        issuedSuccessfully = true;
+        issuedSuccessfully = batch === null || (result.action.kind === "salvageBatch" && batch.failed < result.action.steps.length);
+        if (batch !== null && batch.failed > 0) backoffTicks = settleTicksForRefusals(batch.maxRefusals);
         sessionChangeWaits = 0;
         record({
-          t: now(), kind: "result", run: runID, ok: !(typeof note === "string" && note.startsWith("UNCERTAIN")), says: describeAction(result.action),
-          status: typeof note === "string" && note.length > 0 ? note : undefined,
+          t: now(), kind: "result", run: runID, ok: batch === null ? !(typeof note === "string" && note.startsWith("UNCERTAIN")) : batch.failed === 0, says: describeAction(result.action),
+          status: batch !== null && batch.failed > 0 && result.action.kind === "salvageBatch"
+            ? `${batch.failed} of ${result.action.steps.length} refused`
+            : typeof note === "string" && note.length > 0 ? note : undefined,
         });
         // It worked: the streak is over. Without this a key that failed twice
         // and then recovered would carry those two forever and stop the run
         // early on an unrelated blip much later.
-        ledger.clear(key);
+        if (batch === null) ledger.clear(key);
+        if (batch !== null && batch.maxRefusals >= MAX_CONSECUTIVE_REFUSALS) {
+          stopOrHeadHome("A salvage substep kept being refused, so the ship is heading home.", result);
+          return;
+        }
         if (freesHoldSpace(result.action)) {
           ledger.forgetRefused(recoversHoldSpace(result.action));
         }
@@ -766,6 +845,21 @@ export function createScriptRunner(deps: ScriptRunnerDeps): ScriptRunnerControll
         // not land. Do not commit its completion or let Resume replay it.
         // Corporate transfers have their own observed-manifest reconciliation.
         const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (result.action.kind === "salvageBatch") {
+          const completed = error && typeof error === "object" && "salvageBatchOutcomes" in error
+            ? error.salvageBatchOutcomes : null;
+          if (batchOutcomesMatch(completed, result.action.steps, false)) {
+            const settled = settleBatch(result.memory, result.stepPath, completed, obs);
+            memory = { ...settled.memory, latched: memory?.latched ?? settled.memory.latched };
+            retainActionProgress(beforeAction, memory, result.action);
+          }
+          uncertainAction = result.action;
+          const reason = deps.refusalReason(error);
+          record({ t: now(), kind: "result", run: runID, ok: false, refusal: reason,
+            says: describeAction(result.action), stepPath: result.stepPath });
+          pauseWith(`The salvage batch stopped before every outcome was confirmed. Verify the modules and locks in the game, then Stop before starting a new run. ${refusalWords(reason)}`, result);
+          return;
+        }
         const acceptedDroneIDs = error && typeof error === "object" && "acceptedDroneIDs" in error
           ? error.acceptedDroneIDs : null;
         if (result.action.kind === "engageDrones" && code === "CALL_REFUSED" && Array.isArray(acceptedDroneIDs) && acceptedDroneIDs.length > 0) {
