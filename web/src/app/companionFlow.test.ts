@@ -12,11 +12,11 @@
 // construction, but "by construction" is a claim about types, and two loops
 // steering one ship is a runtime disaster. These drive it for real.
 
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
-import { createAppFlow } from "./flow.ts";
+import { createAppFlow as createUntrackedAppFlow } from "./flow.ts";
 import { createClientStore } from "../store/clientStore.ts";
 import {
   DEFAULT_COMPANION_SETUP,
@@ -36,6 +36,26 @@ import {
   namesBody,
   spaceBody,
 } from "./botFixtures.ts";
+
+// ⚠ EVERY FLOW A TEST BUILDS IS STOPPED AFTER IT, PASS OR FAIL. Most tests here
+// end with a bare `flow.stopFleetCompanion()`, which a failed assertion above it
+// skips: the companion loop's timer then keeps the process alive and the file
+// never exits (it hung the Docker gate for twenty minutes on 2026-10-14). The
+// hook is the `finally` every one of them would otherwise need.
+const liveFlows = new Set<ReturnType<typeof createUntrackedAppFlow>>();
+
+function createAppFlow(...args: Parameters<typeof createUntrackedAppFlow>): ReturnType<typeof createUntrackedAppFlow> {
+  const flow = createUntrackedAppFlow(...args);
+  liveFlows.add(flow);
+  return flow;
+}
+
+afterEach(() => {
+  for (const flow of liveFlows) {
+    flow.stopFleetCompanion();
+  }
+  liveFlows.clear();
+});
 
 const BELT = 40000123;
 const STATION = 60003760;
@@ -224,6 +244,8 @@ function chatHarness(
   options: {
     readonly humanMemberCharacterID?: number;
     readonly chatEntries?: readonly unknown[];
+    /** The station the roster says the commander is docked in; absent says nothing. */
+    readonly commanderStationID?: number;
   } = {},
 ) {
   const calls: string[] = [];
@@ -263,6 +285,9 @@ function chatHarness(
                     keyVal([
                       ["charID", ALLOWED_CHAT_SENDER],
                       ["role", 1],
+                      ...(options.commanderStationID === undefined
+                        ? []
+                        : [["stationID", options.commanderStationID] as const]),
                     ]),
                   ],
                 ],
@@ -620,25 +645,33 @@ test("a chat order older than FLEET_BROADCAST_TTL_MS does not reach the loop", a
   const { store, flow, calls } = chatHarness({
     humanMemberCharacterID: HUMAN_FLEET_MEMBER,
     chatEntries: [alignChatLine(FLEET_BROADCAST_TTL_MS + 5_000)],
+    // The commander is docked, by the roster's own word. Off this grid and
+    // somewhere unknown, it would be warped to (rung 9b, the rejoin) and the
+    // pilot would not be idle; docked, there is nothing to rejoin, so "Standing
+    // by" is still the answer to the question this test asks.
+    commanderStationID: STATION,
   });
   const request: FleetCompanionRequest = {
     ...DEFAULT_FLEET_COMPANION_REQUEST,
   };
 
-  await flow.startFleetCompanion(request);
-  await waitForCompanionTick(() => store.get().companion.why);
+  try {
+    await flow.startFleetCompanion(request);
+    await waitForCompanionTick(() => store.get().companion.why);
 
-  assert.ok(calls.includes("/api/bridge/chat/local"), "the read itself still happens");
-  assert.ok(
-    !calls.some((each) => each.startsWith("beyonce.CmdAlignTo") || each === "/api/bridge/flight/align"),
-    "a chat order past its TTL must not be obeyed -- a lapsed order is exactly as stale as a lapsed broadcast",
-  );
-  assert.equal(
-    store.get().companion.phase,
-    "Standing by",
-    "with the order dropped as stale, this supervised pilot has nothing to obey",
-  );
-  flow.stopFleetCompanion();
+    assert.ok(calls.includes("/api/bridge/chat/local"), "the read itself still happens");
+    assert.ok(
+      !calls.some((each) => each.startsWith("beyonce.CmdAlignTo") || each === "/api/bridge/flight/align"),
+      "a chat order past its TTL must not be obeyed -- a lapsed order is exactly as stale as a lapsed broadcast",
+    );
+    assert.equal(
+      store.get().companion.phase,
+      "Standing by",
+      "with the order dropped as stale, this supervised pilot has nothing to obey",
+    );
+  } finally {
+    flow.stopFleetCompanion();
+  }
 });
 
 test("a chat order inside FLEET_BROADCAST_TTL_MS reaches the loop and is obeyed", async () => {
@@ -1229,10 +1262,34 @@ function gridHarness(options: {
    * which rung fires is not a neutral fixture.
    */
   readonly hardener?: boolean;
+  /**
+   * What GET /api/types/activation answers for each type: whether the server
+   * can switch it on at all. Left out, the read answers nothing (not known).
+   */
+  readonly activation?: Readonly<Record<number, boolean | null>>;
+  /**
+   * The scene a dead ballpark answers: `inSpace` with no ship and no entities, as a
+   * 200 (seen live 2026-10-14 12:00:11 UTC). `entities` is ignored when set.
+   */
+  readonly blind?: boolean;
 }) {
   const calls: RecordedCall[] = [];
 
   function spaceBodyWithGrid(): unknown {
+    if (options.blind === true) {
+      return {
+        ok: true,
+        space: {
+          inSpace: true,
+          solarSystemID: SOLAR_SYSTEM_ID,
+          shipID: SHIP_ID,
+          sampledAtMs: 0,
+          ship: null,
+          entities: [],
+        },
+        notifications: [],
+      };
+    }
     return {
       ok: true,
       space: {
@@ -1279,6 +1336,9 @@ function gridHarness(options: {
           return fittingBody(options.hardener === true ? { extraModules: [HARDENER_ROW] } : {});
         }
         if (path === "/api/bridge/targets") return { ok: true, targetIDs: [], notifications: [] };
+        if (path.startsWith("/api/types/activation?") && options.activation !== undefined) {
+          return { ok: true, source: "static-data", activatable: options.activation, capped: false, limit: 500 };
+        }
         if (path === "/api/bridge/bound-fleet") {
           return readyFleet({
             members: [
@@ -1374,6 +1434,43 @@ test("the same grid with NOBODY locking leaves the hardener alone", async () => 
     calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate").length,
     0,
     "nobody is shooting at this pilot, so nothing should be burning capacitor",
+  );
+  flow.stopFleetCompanion();
+});
+
+test("a module whose TYPE the server cannot switch on is never lit, whatever its group says", async () => {
+  // ⚠ SEEN LIVE 2026-10-14: a Drone Navigation Computer I, picked by its group
+  // name, was refused "... cannot be activated." once a fight. The same fight
+  // as the player-lock test above, the same "Shield Hardener" group, but the
+  // static data's answer for the type is that nothing on it can be switched on:
+  // the tank rung must have nothing to light.
+  const { store, flow, calls } = gridHarness({
+    hardener: true,
+    activation: { [HARDENER_TYPE_ID]: false },
+    entities: [
+      rivalShip({
+        itemID: RIVAL_SHIP_ITEM_ID,
+        typeID: RIVAL_HULL_TYPE_ID,
+        characterID: RIVAL_CHARACTER_ID,
+        distance: 9000,
+        locking: true,
+      }),
+    ],
+  });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(
+    calls.filter((call) => call.path === "/api/bridge/call" && call.body.method === "Activate").length,
+    0,
+    "a passive module is never asked for",
+  );
+  assert.notEqual(store.get().companion.phase, "Tanking up");
+  assert.ok(
+    calls.some((call) => call.path.startsWith("/api/types/activation?") &&
+      call.path.split("typeIDs=")[1]?.split(/%2C|,/).includes(String(HARDENER_TYPE_ID))),
+    "the type's answer was asked for before the lists were built",
   );
   flow.stopFleetCompanion();
 });
@@ -1777,4 +1874,144 @@ test("a push with nothing for the ladder to do leaves the cadence alone", async 
   const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 700);
   flow.stopFleetCompanion();
   assert.equal(wokeAfterMs, null, "a push the ladder cannot act on must not buy a tick");
+});
+// --- waking on a hit drone ---------------------------------------------------
+//
+// ⚠ NO LIVE STREAM HERE, ON PURPOSE. The pilots this is for are the ones NOT on
+// screen, and only the pilot on screen holds a stream (sessions.ts). The wake
+// must come from the companion's own read of its snapshot while it sleeps.
+
+const FIGHT_RAT_ID = 9101;
+const FIGHT_DRONE_ID = 9201;
+
+/** A fight: one rat, one of this pilot's drones out. `hurt()` says whether the drone has lost shield. */
+async function companionInDroneFight(hurt: () => boolean) {
+  const readsAtMs: number[] = [];
+  const snapshotReadsAtMs: number[] = [];
+  const fakeFetch = (async (input: unknown, init?: { body?: unknown }) => {
+    const path = String(input);
+    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
+    if (path === "/api/bridge/flight/status") readsAtMs.push(Date.now());
+    if (path === "/api/bridge/space/snapshot") snapshotReadsAtMs.push(Date.now());
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        if (path === "/api/bridge/flight/status") return flightBody(false);
+        if (path === "/api/bridge/space/snapshot") {
+          const base = spaceBody() as { space: { entities: unknown[] } };
+          return {
+            ...base,
+            space: {
+              ...base.space,
+              entities: [
+                ...base.space.entities,
+                {
+                  itemID: FIGHT_RAT_ID, kind: "ship", typeID: 23707, radius: 30,
+                  position: { x: 20_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 },
+                  shieldRatio: 1, armorRatio: 1, hullRatio: 1,
+                  isNpc: true, npcEntityType: "npc", isSelf: false, targetEntityID: null,
+                },
+                {
+                  itemID: FIGHT_DRONE_ID, kind: "drone", typeID: 2185, radius: 5,
+                  position: { x: 19_000, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 },
+                  shieldRatio: hurt() ? 0.6 : 1, armorRatio: 1, hullRatio: 1,
+                  isNpc: false, isSelf: false, ownerID: OWN_CHARACTER_ID, controllerID: SHIP_ID,
+                  droneActivity: "idle", targetEntityID: null,
+                },
+              ],
+            },
+          };
+        }
+        if (path === "/api/bridge/fitting") return fittingBody({});
+        if (path === "/api/names") return namesBody(body as Record<string, unknown>);
+        if (path === "/api/bridge/targets") return { ok: true, targetIDs: [], notifications: [] };
+        if (path === "/api/bridge/bound-fleet") {
+          return readyFleet({
+            members: [
+              { charID: OWN_CHARACTER_ID, role: 4, job: 0 },
+              { charID: ALLOWED_CHAT_SENDER, role: 1 },
+            ],
+          });
+        }
+        if (path === "/api/bots/active") return { ok: true, characterIDs: [], bots: [] };
+        return { ok: true };
+      },
+    };
+  }) as unknown as typeof fetch;
+
+  const store = createClientStore();
+  seatOnlineCharacter(store, OWN_CHARACTER_ID);
+  const flow = createAppFlow(store, { fetch: fakeFetch, livePush: false });
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+  assert.equal(
+    store.get().companion.status,
+    "running",
+    `the companion must actually be flying: ${String(store.get().companion.why)}`,
+  );
+  // Let the tick that just ran finish and its sleep begin.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return { flow, readsAtMs, snapshotReadsAtMs, ticksBefore: readsAtMs.length };
+}
+
+test("a drone losing shield while the companion sleeps wakes it, with no live stream", async () => {
+  let hurt = false;
+  const { flow, readsAtMs, ticksBefore } = await companionInDroneFight(() => hurt);
+  hurt = true;
+  const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 1_500);
+  flow.stopFleetCompanion();
+  assert.notEqual(wokeAfterMs, null, "the hit drone never woke the loop");
+  assert.ok(
+    wokeAfterMs !== null && wokeAfterMs < FLEET_COMPANION_CADENCE_MS - 300,
+    `a hit drone must not wait out the cadence, took ${String(wokeAfterMs)} ms`,
+  );
+});
+
+test("whole drones in a fight are watched, but do not wake the loop", async () => {
+  const { flow, readsAtMs, snapshotReadsAtMs, ticksBefore } = await companionInDroneFight(() => false);
+  const snapshotsBefore = snapshotReadsAtMs.length;
+  const wokeAfterMs = await nextTickWithin(readsAtMs, ticksBefore, 1_200);
+  const watched = snapshotReadsAtMs.length - snapshotsBefore;
+  flow.stopFleetCompanion();
+  assert.equal(wokeAfterMs, null, "nothing was hit, so the cadence stands");
+  assert.ok(watched >= 1 && watched <= 4, `the sleep reads the snapshot a few times, read ${watched}`);
+});
+
+
+test("a blind scene (inSpace, no ship, no entities) is unknown: the pilot says it cannot see and decides nothing", async () => {
+  // ⚠ SEEN LIVE 2026-10-14 12:00:11 UTC: a dead ballpark answered this with a 200.
+  // `decodeSpaceSnapshot` never returns null, so `hostileOnGrid` read a confident
+  // `false` and the grid-clear reload fired mid-fight. A hardener and a player
+  // lock would normally light the rack; here nothing may be issued at all.
+  const { store, flow, calls } = gridHarness({ hardener: true, entities: [], blind: true });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(store.get().companion.phase, "Reading space");
+  assert.equal(store.get().companion.why, "Cannot see space right now: reading again.");
+  assert.equal(store.get().companion.status, "running");
+  assert.doesNotMatch(store.get().companion.why ?? "", /health could not be read/);
+  const issued = calls.filter(
+    (call) =>
+      call.path.startsWith("/api/bridge/modules/") ||
+      call.path.startsWith("/api/bridge/drones/") ||
+      call.path === "/api/bridge/flight/warp-to",
+  );
+  assert.deepEqual(issued.map((call) => call.path), [], "a pilot that cannot see issues nothing");
+  flow.stopFleetCompanion();
+});
+
+test("an empty grid with the ship present is still a clear grid, not a blind one", async () => {
+  // The other half of the pair: ship in the scene, nothing else on grid. This is
+  // the quiet grid the blind rung must not swallow.
+  const { store, flow } = gridHarness({ entities: [] });
+
+  await flow.startFleetCompanion(DEFAULT_COMPANION_SETUP);
+  await waitForCompanionTick(() => store.get().companion.why);
+
+  assert.equal(store.get().companion.phase, "Standing by");
+  assert.notEqual(store.get().companion.why, "Cannot see space right now: reading again.");
+  flow.stopFleetCompanion();
 });
