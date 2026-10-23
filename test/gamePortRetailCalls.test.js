@@ -1806,6 +1806,8 @@ test("the game-port client permits native trade, local inventory helpers and cal
     "insurgencySolarsystem.GetAllVisibleCampaigns",
     // What the account may redeem, fetched as the neocom is set up. The gateway's list has nothing of the user service's.
     "userSvc.GetRedeemTokens",
+    // The redeem window's claim of those tokens, which the page makes by name. The gateway's list has nothing of the user service's.
+    "userSvc.ClaimRedeemTokens",
     // Whether the character has done Project Discovery's tutorial and whether the project is enabled, asked by its client service. The gateway's list has nothing of Project Discovery's.
     "ProjectDiscovery.initialize_tutorial_status", "ProjectDiscovery.is_enabled",
     // Whether the client wraps its texts for QA, told on a session of the QA role. The gateway's list has nothing of the localization server's.
@@ -3306,5 +3308,26 @@ test("the survey scan is the client's with nothing sent", () => {
     const odd = scan(args, kwargs);
     assert.deepEqual([odd.status, odd.args, odd.kwargs], ["differs", args, kwargs], why);
     assert.match(odd.note, /sends nothing/, why);
+  }
+});
+
+test("a claim of redeem tokens goes out as the redeem window's: a list of (tokenID, massTokenID), the session's character, useHomeStation by keyword", () => {
+  const own = { characterID: 90000001 };
+  const answer = withContext("userSvc.ClaimRedeemTokens", [[[101, null], [102, 202]], 90000001], { useHomeStation: false }, own);
+  assert.deepEqual([answer.args, answer.kwargs, answer.status], [[list([[101, null], [102, 202]]), 90000001], { useHomeStation: false }, "reshaped"]);
+  assert.match(answer.source, /redeemsvc\.py:103$/);
+  // The keyword is said every time, False where it is not.
+  assert.deepEqual(withContext("userSvc.ClaimRedeemTokens", [[[101, null]], 90000001], {}, own).kwargs, { useHomeStation: false });
+  // Already the client's own: left as it is.
+  const kept = withContext("userSvc.ClaimRedeemTokens", [list([[101, null]]), 90000001], { useHomeStation: true }, own);
+  assert.deepEqual([kept.args, kept.kwargs, kept.status], [[list([[101, null]]), 90000001], { useHomeStation: true }, "same"]);
+  for (const [args, kwargs] of [
+    [[[], 90000001], {}],
+    [[[[101]], 90000001], {}],
+    [[[[101, null]], 90000002], {}],
+    [[[[101, null]], 90000001], { useHomeStation: 1 }],
+    [[[[101, null]], 90000001], { station: 60003760 }],
+  ]) {
+    assert.equal(withContext("userSvc.ClaimRedeemTokens", args, kwargs, own).status, "differs", JSON.stringify([args, kwargs]));
   }
 });

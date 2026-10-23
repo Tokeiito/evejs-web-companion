@@ -56,6 +56,8 @@
   const station = store.station;
   // svelte-ignore state_referenced_locally
   const wallet = store.wallet;
+  // svelte-ignore state_referenced_locally
+  const redeem = store.redeem;
 
   // Contextual panels (Show Info) are deliberately absent: they open on the thing
   // you clicked, so a rail entry could only ever open one onto nothing.
@@ -75,6 +77,8 @@
     return portrait === null ? [] : [portrait, clientTexture(portraitDefaultPath(256))];
   });
   const balance = $derived($wallet.cashBalance ?? null);
+  /** The redeem button's count (redeemsvc.py GetRedeemTokenCount, 56 to 61): how many tokens the account has. */
+  const redeemCount = $derived($redeem.tokens?.length ?? 0);
 
   /**
    * EVE time, re-read on a timer.
@@ -145,8 +149,8 @@
           class:open={openIds.has(tab.id)}
           class:active={focusedId === tab.id}
           aria-pressed={openIds.has(tab.id)}
-          title={tab.label}
-          aria-label={tab.label}
+          title={tab.id === "redeem" && redeemCount > 0 ? `${tab.label} (${redeemCount})` : tab.label}
+          aria-label={tab.id === "redeem" && redeemCount > 0 ? `${tab.label}, ${redeemCount} to redeem` : tab.label}
           onclick={() => onSelect(tab.id)}
         >
           <svg class="neocom-glyph" viewBox="0 0 24 24" aria-hidden="true">
@@ -159,6 +163,9 @@
                breakpoint the rail becomes a horizontal strip and these are what
                keep it usable on a phone. -->
           <span class="neocom-item-label">{tab.label}</span>
+          {#if tab.id === "redeem" && redeemCount > 0}
+            <span class="neocom-badge" aria-hidden="true">{redeemCount}</span>
+          {/if}
         </button>
       </li>
     {/each}
