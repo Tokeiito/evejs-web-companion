@@ -65,6 +65,22 @@ import {
 
 // ─── The one action a tick emits ─────────────────────────────────────────────
 
+export type SalvageBatchStep =
+  | { readonly kind: "lock"; readonly targetID: number }
+  | { readonly kind: "unlock"; readonly targetID: number }
+  | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
+  | { readonly kind: "deactivate"; readonly moduleID: number };
+
+export type SalvageBatchOutcome =
+  | { readonly step: SalvageBatchStep; readonly ok: true }
+  | { readonly step: SalvageBatchStep; readonly ok: false; readonly error: unknown };
+
+/** Definite answers for every dispatched substep; an uncertain call throws instead. */
+export interface SalvageBatchResult {
+  readonly kind: "salvageBatch";
+  readonly outcomes: readonly SalvageBatchOutcome[];
+}
+
 export type ScriptAction =
   | { readonly kind: "maintainMiningSupport"; readonly relocating: boolean }
   | { readonly kind: "stopMiningSupportOperation" }
@@ -233,11 +249,7 @@ export type ScriptAction =
    * wrecks, salvagers put on locked wrecks, locks asked for. Each step is made by itself; one refused does not
    * stop the rest.
    */
-  | { readonly kind: "salvageBatch"; readonly steps: readonly (
-      | { readonly kind: "lock"; readonly targetID: number }
-      | { readonly kind: "unlock"; readonly targetID: number }
-      | { readonly kind: "activate"; readonly moduleID: number; readonly targetID: number }
-      | { readonly kind: "deactivate"; readonly moduleID: number })[] }
+  | { readonly kind: "salvageBatch"; readonly steps: readonly SalvageBatchStep[] }
   /** Move bookmarks from one folder into another (a salvaged site's bookmark filed away). */
   | { readonly kind: "moveBookmarks"; readonly fromFolderID: number; readonly toFolderID: number; readonly bookmarkIDs: readonly number[] }
   /** Warp to one of the pilot's planetary launches, by the launch's own ID. */

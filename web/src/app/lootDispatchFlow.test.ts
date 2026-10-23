@@ -18,6 +18,7 @@ import { createClientStore } from "../store/clientStore.ts";
 import type { BotScript } from "../bots/botScript.ts";
 import { fittingBody, flightBody, holdsBody, namesBody } from "./botFixtures.ts";
 import { isNoRoomAboard } from "../nav/refusalLedger.ts";
+import { SCRIPT_MACROS } from "../nav/scriptMacros.ts";
 
 const CHARACTER_ID = 140000005;
 const STATION_ID = 60000358;
@@ -815,7 +816,9 @@ function manualLootFetch(options: {
   used?: Readonly<Record<string, number>>;
   rows: unknown[];
   volumes?: Record<string, number>;
+  cargoCapacity?: number;
 }) {
+  let remaining = [...options.rows];
   return makeFakeFetch((path, _method, body) => {
     if (path === "/api/bridge/flight/status") return { status: 200, body: flightBody(false) };
     if ((path === "/api/bridge/space/snapshot" || path === "/api/bridge/script/observation")) {
@@ -833,14 +836,26 @@ function manualLootFetch(options: {
       };
     }
     if (path === "/api/names") return { status: 200, body: namesBody(body) };
+    if (path === "/api/bridge/fitting") return { status: 200, body: fittingBody() };
     if (path === "/api/bridge/ship/ore-hold") return { status: 200, body: holdsBody(0, []) };
     if (path.startsWith(`/api/bridge/ship/${SHIP_ID}/bays`)) {
-      return { status: 200, body: baysBody(SHIP_ID, options.bays, options.used ?? {}) };
+      const bays = baysBody(SHIP_ID, options.bays, options.used ?? {}) as { bays: { key: string; capacity: { capacity: number; used: number } }[] };
+      const cargo = bays.bays.find((bay) => bay.key === "cargo");
+      if (cargo && options.bays.includes("cargo")) cargo.capacity.capacity = options.cargoCapacity ?? 350;
+      return { status: 200, body: bays };
     }
     if (path.startsWith("/api/bridge/inventory/container/")) {
-      return { status: 200, body: containerReads(options.containerID, options.rows, options.volumes ?? {}) };
+      return { status: 200, body: containerReads(options.containerID, remaining, options.volumes ?? {}) };
     }
     if (path === "/api/bridge/inventory/transfer") {
+      const itemIDs = body.itemIDs as number[];
+      remaining = remaining.flatMap((row) => {
+        const packed = row as { fields: { itemID: number; quantity: number; singleton?: number | boolean } };
+        if (!itemIDs.includes(packed.fields.itemID)) return [row];
+        const quantity = packed.fields.singleton ? 1 : packed.fields.quantity;
+        const taken = typeof body.qty === "number" ? body.qty : quantity;
+        return taken < quantity ? [{ ...packed, fields: { ...packed.fields, quantity: quantity - taken } }] : [];
+      });
       return { status: 200, body: { ok: true, applied: true, moved: [], declined: [], declinedSilently: false, notFound: [] } };
     }
     return { status: 200, body: { ok: true } };
@@ -1060,3 +1075,108 @@ test("a PARTIAL loot says NOTHING: what did not fit is a fact about this hull", 
     "nothing was said about a can that still has loot in it",
   );
 });
+
+const oversizeRow = () => packedRow({ itemID: 90080, typeID: 500, groupID: 25, categoryID: 6, quantity: 1, singleton: 0 });
+const smallLootRow = () => packedRow({ itemID: 90081, typeID: 34, groupID: 18, categoryID: 4, quantity: 1, singleton: 0 });
+
+test("oversized loot completes locally without telling a larger ship the container is empty", async () => {
+  const CONTAINER_ID = 80016;
+  const store = onlineStore();
+  const { fetch, requests } = manualLootFetch({ containerID: CONTAINER_ID, kind: "container", bays: ["cargo"],
+    rows: [oversizeRow()], volumes: { "500": 4000 } });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadSpaceSnapshot();
+  assert.deepEqual(await flow.lootContainer(CONTAINER_ID), { stacks: 1, planned: 0, moved: 0 });
+  await settle();
+  assert.equal(requests.some((request) => request.path === "/api/bots/loot-memory"), false);
+  assert.equal(requests.some((request) => request.path === "/api/bridge/inventory/transfer"), false);
+
+  // The salvager commits a successful attempt in its own site memory. The can
+  // remains on the scene; that local completion must still finish the site.
+  const salvager = SCRIPT_MACROS["salvage-bookmarked-sites"]!;
+  const step = { id: "salvager", kind: "macro", macro: "salvage-bookmarked-sites", args: {
+    fromFolder: { kind: "bookmarkFolder", folderID: 7000001, name: "To Salvage" },
+    doneFolder: { kind: "bookmarkFolder", folderID: 7000002, name: "Salvaged" },
+    station: { kind: "station", ref: { entity: "station", id: STATION_ID, name: "Home", systemName: null } },
+  } } as const;
+  const observation = { inSpace: true, docked: false, inWarp: false, shieldRatio: 1, armorRatio: 1, hullRatio: 1,
+    health: 1, oreHoldFraction: 0, holdEmpty: true, hostileOnGrid: false, dronesOut: false,
+    myCharacterID: 555, salvageModuleIDs: [], tractorModuleIDs: [],
+    flightStatus: { inSpace: true, docked: false, solarSystemID: SOLAR_SYSTEM_ID },
+    bookmarks: [{ bookmarkID: 9000011, name: "Site", folderID: 7000001, solarSystemID: SOLAR_SYSTEM_ID }],
+    snapshot: store.space.get().snapshot,
+  } as never;
+  const ready = { foldersReady: true, fromID: 7000001, doneID: 7000002, unloadChecked: true, site: 9000011, stage: "site" };
+  const attempted = salvager(step, observation, ready, {});
+  assert.deepEqual(attempted.action, { kind: "lootWreck", wreckID: CONTAINER_ID });
+  const finished = salvager(step, observation, attempted.nextMem, {});
+  assert.equal(finished.action.kind, "moveBookmarks", "success sets aside this hull's uncarryable cargo without an unload trip");
+});
+
+test("moving the carryable part of a mixed container does not publish the oversized remainder as empty", async () => {
+  const CONTAINER_ID = 80017;
+  const store = onlineStore();
+  const { fetch, requests } = manualLootFetch({ containerID: CONTAINER_ID, kind: "container", bays: ["cargo"],
+    rows: [oversizeRow(), smallLootRow()], volumes: { "500": 4000, "34": 1 } });
+  const flow = createAppFlow(store, { fetch });
+  await flow.loadSpaceSnapshot();
+  assert.deepEqual(await flow.lootContainer(CONTAINER_ID), { stacks: 2, planned: 1, moved: 1 });
+  await settle();
+  assert.equal(requests.filter((request) => request.path === "/api/bridge/inventory/transfer").length, 1);
+  assert.equal(requests.some((request) => request.path === "/api/bots/loot-memory"), false);
+});
+
+test("a claimed mixed container finishes its transfer without advertising the oversized remainder as empty", async () => {
+  const CONTAINER_ID = 80018;
+  const store = onlineStore();
+  const { fetch, requests } = manualLootFetch({ containerID: CONTAINER_ID, kind: "container", bays: ["cargo"],
+    rows: [oversizeRow(), smallLootRow()], volumes: { "500": 4000, "34": 1 } });
+  const flow = createAppFlow(store, { fetch });
+  try {
+    await flow.startCustomBot(script({ id: "loot", kind: "macro", macro: "loot-containers", args: {} }));
+    const until = Date.now() + 2000;
+    while (requests.filter((request) => request.path === `/api/bridge/inventory/container/${CONTAINER_ID}`).length < 2 && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(requests.some((request) => request.path === "/api/bridge/inventory/transfer" && typeof request.body.claimRunID === "string"), true);
+    await settle();
+    assert.equal(requests.some((request) => request.path === "/api/bots/loot-memory"), false);
+    assert.deepEqual(store.customBot.get().refusals, [], "an oversized remainder does not become a full-ship refusal");
+  } finally {
+    flow.stopCustomBot();
+  }
+});
+
+test("one accepted partial-stack transfer is not proof that its container is empty", async () => {
+  const CONTAINER_ID = 80019;
+  const { fetch, requests } = manualLootFetch({ containerID: CONTAINER_ID, kind: "container", bays: ["cargo"],
+    rows: [packedRow({ itemID: 90082, typeID: 34, groupID: 18, categoryID: 4, quantity: 500, singleton: 0 })], volumes: { "34": 1 } });
+  const flow = createAppFlow(onlineStore(), { fetch });
+  await flow.loadSpaceSnapshot();
+  assert.deepEqual(await flow.lootContainer(CONTAINER_ID), { stacks: 1, planned: 1, moved: 1 });
+  await settle();
+  assert.equal(requests.find((request) => request.path === "/api/bridge/inventory/transfer")?.body.qty, 350);
+  assert.equal(requests.some((request) => request.path === "/api/bots/loot-memory"), false, "150 units remain for another ship");
+});
+
+for (const unavailable of ["failed", "malformed"] as const) {
+  test(`a ${unavailable} post-transfer read never publishes a global empty record`, async () => {
+    const CONTAINER_ID = 80020;
+    const { fetch, requests } = manualLootFetch({ containerID: CONTAINER_ID, kind: "container", bays: ["cargo"],
+      rows: [smallLootRow()], volumes: { "34": 1 } });
+    let reads = 0;
+    const uncertainFetch: typeof fetch = async (input, init) => {
+      if (String(input).startsWith(`/api/bridge/inventory/container/${CONTAINER_ID}`) && ++reads > 1) {
+        if (unavailable === "failed") throw new Error("post-transfer read unavailable");
+        return { ok: true, status: 200, async json() { return { ok: true, list: null }; } } as Response;
+      }
+      return fetch(input, init);
+    };
+    const flow = createAppFlow(onlineStore(), { fetch: uncertainFetch });
+    await flow.loadSpaceSnapshot();
+    assert.deepEqual(await flow.lootContainer(CONTAINER_ID), { stacks: 1, planned: 1, moved: 1 }, "the confirmed transfer stays successful");
+    await settle();
+    assert.equal(reads, 2);
+    assert.equal(requests.some((request) => request.path === "/api/bots/loot-memory"), false);
+  });
+}

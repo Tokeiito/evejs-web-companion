@@ -330,6 +330,22 @@ test("on site: a wreck the runner's lock streak names three times is left for go
   assert.notDeepEqual(later.action, { kind: "lock", targetID: 4701 });
 });
 
+test("on site: a single wreck's target-specific refusal survives successful loot and a cleared ledger", () => {
+  const wreck = { itemID: 4801, kind: "wreck", ownerID: 90000001, corporationID: null,
+    position: { x: 1_200, y: 0, z: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+  const can = { ...wreck, itemID: 4802, kind: "container", position: { x: 1_000, y: 0, z: 0 } };
+  const grid = (refusals: ScriptObservation["refusals"]) => obs({
+    myCharacterID: 90000001, salvageModuleIDs: [602], tractorModuleIDs: [], lockedTargetIDs: [],
+    refusals, snapshot: { ship: SHIP, entities: [wreck, can] } as never,
+  });
+  const failed = [{ key: refusalKey(step.id, "lock", wreck.itemID), targetID: wreck.itemID,
+    count: 3, firstAt: 0, lastAt: 0, words: "Refused.", kind: "refused" as const }];
+  const loot = salvager(step, grid(failed), { ...ready, site: NEAR_SITE, stage: "site" }, NB);
+  assert.deepEqual(loot.action, { kind: "lootWreck", wreckID: can.itemID });
+  const afterLoot = salvager(step, grid([]), loot.nextMem, NB);
+  assert.deepEqual(afterLoot.action, { kind: "moveBookmarks", fromFolderID: FROM, toFolderID: DONE, bookmarkIDs: [NEAR_SITE] });
+});
+
 test("on site: a tractor beam whose wreck has arrived is switched off, so it can take the next", () => {
   const TRACTOR = 601;
   const onSite = { ...ready, site: NEAR_SITE, stage: "site", work: { looted: [4103] } };

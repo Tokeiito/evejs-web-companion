@@ -501,6 +501,7 @@ import { CHARGE_ATTRIBUTE_IDS, chargeFactsFromAttributes, type ChargeFacts } fro
 import { RAT_COMBAT_ATTRIBUTE_IDS, ratCombatFromAttributes, type RatCombatFacts } from "../nav/combatPosition.ts";
 import { issueCombatReload } from "../nav/combatReloadIssue.ts";
 import { requireModuleOutcome, moduleSettlementNote } from "../nav/moduleOutcome.ts";
+import { issueSalvageBatch } from "../nav/salvageBatchIssue.ts";
 import { combatUtilityFit, type CombatUtilities } from "../nav/combatUtilities.ts";
 import { AUTOMATIC_UTILITY_FAMILIES } from "../nav/combatUtilityPolicy.ts";
 import { issueCombatUtility, issueUtilityReload } from "../nav/combatUtilityIssue.ts";
@@ -26685,7 +26686,8 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
         ? Promise.resolve(null)
         : api.getShipBays(shipID, callOptions, [...keys, "cargo"]).catch(() => null),
     ]);
-    const rows = decodeInventoryRows(contents.list, contents.volumes);
+    const rows = decodeInventoryRowsChecked(contents.list, contents.volumes);
+    if (rows === null) throw new Error("Container contents could not be confirmed.");
     if (rows.length === 0) {
       // It held nothing — the one answer nobody could have had without flying
       // here. Say so, so the next pilot does not make the same trip.
@@ -26700,13 +26702,13 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
     // ⚠ A THING NO HOLD OF THIS HULL COULD TAKE EVEN EMPTY IS NOT A FULL SHIP.
     // A 4,000 m3 drop in a wreck used to plan nothing, which reads as "no room"
     // and sent a salvager home to unload and back again for ever. Such rows are
-    // left where they are (bayRouting.splitNeverFits); a can holding nothing
-    // else is as good as emptied, for this pilot and every one like it.
+    // left where they are (bayRouting.splitNeverFits). Successful completion
+    // lets this salvager's own memory move on; another hull may carry them,
+    // so this is never evidence for the shared emptied-container record.
     const capacityFor = (bay: string | null): number | null =>
       room.find((entry) => entry.key === (bay ?? "cargo"))?.capacity?.capacity ?? null;
     const { rest } = splitNeverFits(rows, bays, capacityFor);
     if (rest.length === 0) {
-      reportContainerEmptied(containerID);
       return { stacks: rows.length, planned: 0, moved: 0 };
     }
     const outcome = await transferLootedRows(
@@ -26716,23 +26718,24 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
       freeFor,
       claim,
     );
-    if (claim) {
-      // The route keeps its lease until an authoritative post-action read says
-      // the container is actually empty. A planned transfer can fit only part
-      // of a stack, or leave another stack behind for this or another hull.
-      const remaining = await api.openContainer(containerID, callOptions);
-      if (splitNeverFits(decodeInventoryRows(remaining.list, remaining.volumes), bays, capacityFor).rest.length > 0) {
-        throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
+    if (claim || outcome.moved > 0) {
+      // Transfers count calls, not emptied stacks, and one call may move only
+      // part of one stack. Only the actual remaining rows prove global empty.
+      // A claimant still requires the post-read; a manual/companion transfer
+      // that succeeded need not fail solely because that extra read failed.
+      const remaining = claim
+        ? await api.openContainer(containerID, callOptions)
+        : await api.openContainer(containerID, callOptions).catch((error) => {
+          if (isSessionLost(error)) throw error;
+          return null;
+        });
+      if (remaining !== null) {
+        const remainingRows = decodeInventoryRowsChecked(remaining.list, remaining.volumes);
+        if (claim && (remainingRows === null || splitNeverFits(remainingRows, bays, capacityFor).rest.length > 0)) {
+          throw new Error("Container still holds cargo after the transfer; retaining its claim for the next observation.");
+        }
+        if (remainingRows?.length === 0) reportContainerEmptied(containerID);
       }
-      reportContainerEmptied(containerID);
-      return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
-    }
-    if (outcome.moved >= rest.length) {
-      // Every stack it had, this ship took: it is empty NOW, which is the same
-      // fact as "it was empty" to every pilot still to come. A PARTIAL move is
-      // deliberately silent — what did not fit is a fact about this hull's
-      // holds, and a can somebody else has room for must stay on their list.
-      reportContainerEmptied(containerID);
     }
     return { stacks: rows.length, planned: outcome.planned, moved: outcome.moved };
   }
@@ -28252,22 +28255,12 @@ export function createAppFlow(store: ClientStore, options: AppFlowOptions = {}):
             await moveBookmarksCall(bridgeDo, action.fromFolderID, action.toFolderID, null, action.bookmarkIDs);
             return;
           case "salvageBatch": {
-            // A salvager's module work for the tick, as a pilot clicks it: each step by itself, the same calls the
-            // single actions make. A refused step does not stop the rest; all refused is the batch refused.
-            const failed: string[] = [];
-            for (const step of action.steps) {
-              try {
-                if (step.kind === "lock") await lockTargetCall(bridgeDo, step.targetID, null);
-                else if (step.kind === "unlock") await releaseTarget(step.targetID);
-                else if (step.kind === "activate") requireModuleOutcome(await switchModuleOn(step.moduleID, { targetID: step.targetID, repeat: -1 }), step.moduleID, "activate");
-                else requireModuleOutcome(await switchModuleOff(step.moduleID, {}), step.moduleID, "deactivate");
-              } catch (error) {
-                if (isSessionLost(error)) throw error;
-                failed.push(`${step.kind}: ${String(error)}`);
-              }
-            }
-            if (failed.length === action.steps.length) throw new Error(failed[0]);
-            return failed.length > 0 ? `${failed.length} of ${action.steps.length} refused (${failed.join("; ")})` : undefined;
+            return issueSalvageBatch(action.steps, async (step) => {
+              if (step.kind === "lock") await lockTargetCall(bridgeDo, step.targetID, null);
+              else if (step.kind === "unlock") await releaseTarget(step.targetID);
+              else if (step.kind === "activate") requireModuleOutcome(await switchModuleOn(step.moduleID, { targetID: step.targetID, repeat: -1 }), step.moduleID, "activate");
+              else requireModuleOutcome(await switchModuleOff(step.moduleID, {}), step.moduleID, "deactivate");
+            }, isSessionLost);
           }
           case "warpLaunch":
             await warpToLaunchPickup(action.launchID);

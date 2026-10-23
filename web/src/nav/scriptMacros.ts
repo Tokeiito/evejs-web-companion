@@ -21,6 +21,8 @@ import type {
   MacroTick,
   ScriptAction,
   ScriptBoard,
+  SalvageBatchOutcome,
+  SalvageBatchStep,
 } from "./scriptDecide.ts";
 import type { DryBelt, ScriptObservation } from "./scriptConditions.ts";
 import { createCorporateHauler } from "./corporateHauling.ts";
@@ -5514,22 +5516,23 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
   const lockTriesRaw = (mem["lockTries"] as Record<string, number> | undefined) ?? {};
   const lockTries: Record<string, number> = {};
   for (const [id, n] of Object.entries(lockTriesRaw)) if (!locked.has(Number(id))) lockTries[id] = n;
-  // ⚠ THE RUNNER'S LOCK STREAK IS ONE PER STEP, NOT ONE PER WRECK. A lock's refusals are booked under the step's
-  // `lock` key with the wreck as the record's target (scriptRunner, ledger.note), so a lookup by the wreck's own key
-  // never finds them; and a refused tick's memory is thrown away by the runner, so a count kept here alone never grows
-  // past a refusal. Seen live 2026-10-19: one wreck's lock refused twelve times running, every can beside it left,
-  // and the run stopped and went home. The streak is read where the runner keeps it, and a wreck it names three times
-  // is remembered as given up on the next tick that does something else (and so is kept).
+  // Definite refusals are now keyed per wreck, including single calls left
+  // after a batch partly succeeds. Remember a spent target before unrelated
+  // work or a hold change clears its ledger. Older observations can still
+  // carry the step-wide lock streak with target metadata, so read that too.
   const lockStreak = refusalFor(obs.refusals, step.id, "lock", null);
   const lockGaveUp = new Set<number>(Array.isArray(mem["lockGaveUp"]) ? (mem["lockGaveUp"] as number[]) : []);
   if (lockStreak !== null && lockStreak.targetID !== undefined && lockStreak.count >= LOCK_TRIES) lockGaveUp.add(lockStreak.targetID);
+  for (const wreck of wrecksOnGrid(snapshot)) {
+    if (shouldSetAside(obs.refusals, step.id, "lock", wreck.itemID, LOCK_TRIES)) lockGaveUp.add(wreck.itemID);
+  }
   const setAside = (id: number) =>
     lockGaveUp.has(id) ||
     (lockTries[String(id)] ?? 0) >= LOCK_TRIES ||
     (triedRaw[String(id)] ?? 0) >= BATCH_TRIES ||
     shouldSetAside(obs.refusals, step.id, "lootWreck", id, MAX_BLOCK_ATTEMPTS) ||
     shouldSetAside(obs.refusals, step.id, "activate", id, MAX_BLOCK_ATTEMPTS) ||
-    shouldSetAside(obs.refusals, step.id, "lock", id, MAX_BLOCK_ATTEMPTS);
+    shouldSetAside(obs.refusals, step.id, "lock", id, LOCK_TRIES);
   const who = { characterID: obs.myCharacterID ?? null, corporationID: obs.myCorporationID ?? null };
   // ⚠ A PULL THAT GOES NOWHERE. Seen live 2026-10-16: a beam cycled on a can for five minutes and the can never
   // moved, and the salvager held position the whole time, waiting for a pull in progress; switched off and taken again,
@@ -5622,7 +5625,12 @@ function workSalvageSite(step: MacroStep, obs: ScriptObservation, mem: MacroMemo
       if (st.kind === "activate") { newLastSet = { ...newLastSet, [String(st.moduleID)]: st.targetID }; tries[String(st.targetID)] = (tries[String(st.targetID)] ?? 0) + 1; }
       if (st.kind === "deactivate") { const { [String(st.moduleID)]: _gone, ...rest } = newLastSet; newLastSet = rest; }
     }
-    const nextMem = { ...next, pending: newPending, lastSet: newLastSet, tries, lockTries: newLockTries };
+    // A batch can contain both accepted and refused calls. Its dispatcher
+    // returns each answer, and the runner commits those answers individually.
+    // Single actions retain the runner's existing success/rollback discipline.
+    const nextMem = steps.length === 1
+      ? { ...next, pending: newPending, lastSet: newLastSet, tries, lockTries: newLockTries }
+      : { ...next, pending, lastSet, tries: triedRaw, lockTries };
     const action: ScriptAction = steps.length === 1
       ? (steps[0]!.kind === "activate" ? { kind: "activate", moduleID: steps[0]!.moduleID, targetID: steps[0]!.targetID }
         : steps[0]!.kind === "deactivate" ? { kind: "deactivate", moduleID: steps[0]!.moduleID } : steps[0]!)
@@ -5683,7 +5691,35 @@ const PULL_PROGRESS_M = 100;
 const PULL_STALL_TICKS = 5;
 /** Stalls on one item before it is not tractored again this site. */
 const PULL_STALLS_ALLOWED = 2;
-type SalvageBatchStep = Extract<ScriptAction, { kind: "salvageBatch" }>["steps"][number];
+
+/** Apply only substeps whose definite answers the dispatcher actually observed. */
+export function settleSalvageBatchMemory(memory: MacroMemory, outcomes: readonly SalvageBatchOutcome[]): MacroMemory {
+  const work = memory["work"] as MacroMemory | undefined;
+  if (work === undefined) return memory;
+  const pending = { ...((work["pending"] as Record<string, number> | undefined) ?? {}) };
+  const tries = { ...((work["tries"] as Record<string, number> | undefined) ?? {}) };
+  const lockTries = { ...((work["lockTries"] as Record<string, number> | undefined) ?? {}) };
+  const lastSet = { ...((work["lastSet"] as Record<string, number> | undefined) ?? {}) };
+  for (const outcome of outcomes) {
+    const action = outcome.step;
+    if (action.kind === "lock") {
+      const target = String(action.targetID);
+      tries[target] = (tries[target] ?? 0) + 1;
+      lockTries[target] = (lockTries[target] ?? 0) + 1;
+      if (outcome.ok) pending[target] = 0;
+      else delete pending[target];
+    } else if (action.kind === "activate") {
+      const target = String(action.targetID);
+      tries[target] = (tries[target] ?? 0) + 1;
+      if (outcome.ok) lastSet[String(action.moduleID)] = action.targetID;
+    } else if (action.kind === "deactivate" && outcome.ok) {
+      delete lastSet[String(action.moduleID)];
+    } else if (action.kind === "unlock" && outcome.ok) {
+      delete pending[String(action.targetID)];
+    }
+  }
+  return { ...memory, work: { ...work, pending, tries, lockTries, lastSet } };
+}
 
 /** The plan's input as it will be once `action` has been done: the module on its target, the lock asked for. */
 function afterStep(state: SalvagePlanInput, action: SalvageAction): SalvagePlanInput {
