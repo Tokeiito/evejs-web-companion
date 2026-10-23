@@ -11,6 +11,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { once } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const { createApp } = require("../src/server");
 const { createBotLogStore } = require("../src/botLogStore");
@@ -162,6 +165,23 @@ test("lines are filed under the SESSION's character, whatever the body says", as
   assert.equal(response.status, 200);
   assert.equal(payload.written, 1);
   assert.deepEqual(store.appended.map((a) => a.characterID), [CHAR_A], "a body characterID must not choose the log");
+});
+
+test("a repeated delivery id reaches the real store without rotating its start twice", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-bot-log-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const store = createBotLogStore({ dir });
+  store.append(CHAR_A, [{ kind: "start", run: "older" }]);
+  const baseUrl = await startTestServer({ bridgeSessions: sessions(), botLogStore: store });
+  const body = { batchID: "retried-delivery", entries: [{ kind: "start", run: "current" }] };
+  const first = await apiRequest(baseUrl, "/api/bots/bot-log", { method: "POST", body });
+  const retried = await apiRequest(baseUrl, "/api/bots/bot-log", { method: "POST", body });
+  assert.equal(first.response.status, 200);
+  assert.equal(retried.response.status, 200);
+  assert.equal(retried.payload.written, 1);
+  assert.deepEqual(store.read(CHAR_A).map((row) => row.run), ["current"]);
+  assert.deepEqual(store.read(CHAR_A, "previous").map((row) => row.run), ["older"]);
+  assert.deepEqual(store.read(CHAR_A, "previous2"), []);
 });
 
 test("a pilot reads their own log, and only their own", async () => {

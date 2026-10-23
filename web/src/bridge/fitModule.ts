@@ -53,6 +53,7 @@ import type { SlotFamily } from "../store/types.ts";
 import type { Ask } from "./ask.ts";
 import { unloadAmmo, type AmmoSession } from "./dogmaWrites.ts";
 import { slotFlagOf } from "./fitting.ts";
+import type { JsonValue } from "./wire.ts";
 import { unwrapLong } from "./wire.ts";
 
 /** invConst.flagAutoFit, flagHangar and flagCargo. */
@@ -367,6 +368,11 @@ export async function destroyRig(
  * The server refuses a ship that is not the pilot's (FakeItemNotFound: asked live on 2026-10-14, one pilot's module
  * into another's Rifter in the same station). Rigs are left as they are and nothing goes in the cargo: the page's
  * refit names no rig.
+ *
+ * `aboard` is the fitting's charges and drones by type, the KeyVal's `chargesByType` and `dronesByType`
+ * (shipfitting/fitting.py 119): the whole quantity the fitting lists, as the client sends it, and the server moves
+ * only what the hold and the bay lack of it (`_fitFittingQuantityItemsToShipBay`). Without it the fitting goes as
+ * its modules alone.
  */
 export async function applyFitting(
   act: Ask,
@@ -374,9 +380,16 @@ export async function applyFitting(
   dockedAt: number,
   modulesByFlag: Readonly<Record<number, number>>,
   itemsByType: Readonly<Record<number, readonly number[]>>,
+  aboard?: {
+    readonly chargesByType: Readonly<Record<number, number>>;
+    readonly dronesByType: Readonly<Record<number, number>>;
+  },
 ): Promise<void> {
   const shipID = itemNumber(ship.shipID);
   if (!Number.isSafeInteger(dockedAt) || dockedAt <= 0) throw new Error("A fitting is applied only while docked.");
   const items = Object.fromEntries(Object.entries(itemsByType).map(([typeID, itemIDs]) => [typeID, [...itemIDs]]));
-  await act("invbroker", "FitFitting", [shipID, ship.typeID, items, dockedAt, { ...modulesByFlag }, {}, false], null, shipID);
+  const fitting: JsonValue = aboard === undefined
+    ? { ...modulesByFlag }
+    : { modulesByFlag: { ...modulesByFlag }, chargesByType: { ...aboard.chargesByType }, dronesByType: { ...aboard.dronesByType } };
+  await act("invbroker", "FitFitting", [shipID, ship.typeID, items, dockedAt, fitting, {}, false], null, shipID);
 }

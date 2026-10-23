@@ -479,6 +479,8 @@ function createBotHost(options) {
           typeof snapshot.followingOrderFrom === "string" ? snapshot.followingOrderFrom : null,
         lastOrderHeard:
           typeof snapshot.lastOrderHeard === "string" ? snapshot.lastOrderHeard : null,
+        targetMode:
+          snapshot.targetMode === "called" || snapshot.targetMode === "all" ? snapshot.targetMode : null,
         canTag: typeof snapshot.canTag === "boolean" ? snapshot.canTag : null,
         // ⚠ THE ONLY ROUTE THESE HAVE TO A PLAYER ON A HEADLESS RUN. The fit
         // warnings are measured once, in the browser stack this host is
@@ -866,7 +868,7 @@ function createBotHost(options) {
       // any other — decodeCompanionSetupValue is its ONE gate, mirroring
       // decodeScriptValue below. Not a single field of it is trusted before
       // this call returns ok.
-      const decoded = stack.decodeCompanionSetupValue(request);
+      const decoded = stack.decodeCompanionSetupValue(request, { preserveLegacyIdentity: true });
       if (!decoded.ok) {
         return { ok: false, code: "BOTCOMPANION_INVALID", message: decoded.refusal };
       }
